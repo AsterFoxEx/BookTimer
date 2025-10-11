@@ -45,10 +45,10 @@
     if (n % 2 === 1) return a[(n - 1) / 2];
     return Math.round((a[n / 2 - 1] + a[n / 2]) / 2);
   }
-  function shortDate(ts){
+  function shortDate(ts) {
     if (!ts) return "-";
     const d = new Date(ts);
-    const mm = pad2(d.getMonth()+1);
+    const mm = pad2(d.getMonth() + 1);
     const dd = pad2(d.getDate());
     const hh = pad2(d.getHours());
     const mi = pad2(d.getMinutes());
@@ -98,10 +98,10 @@
     const target = document.getElementById(`view-${view}`);
     if (target) target.classList.remove("hidden");
     try {
-      const map = {home:"ホーム", library:"ライブラリ", work:"作品ページ", log:"ログ", stats:"統計", settings:"設定"};
+      const map = { home: "ホーム", library: "ライブラリ", work: "作品ページ", log: "ログ", stats: "統計", settings: "設定" };
       const suffix = map[view] || "";
       document.title = suffix ? `ブックタイマー — ${suffix}` : "ブックタイマー";
-    } catch {}
+    } catch { }
   }
   function bindTabKeyboard() {
     const tabs = $$(".toolbar .tab");
@@ -254,7 +254,7 @@
     if (tbody) {
       clear(tbody);
       const f = frag();
-      Object.entries(logs).sort(([a],[b]) => a.localeCompare(b)).forEach(([day, ms]) => {
+      Object.entries(logs).sort(([a], [b]) => a.localeCompare(b)).forEach(([day, ms]) => {
         const tr = document.createElement("tr");
         const tdDay = document.createElement("td"); tdDay.textContent = day;
         const tdMs = document.createElement("td"); tdMs.className = "mono"; tdMs.textContent = fmt(ms || 0);
@@ -268,7 +268,7 @@
     const bars = $("#dailyBars");
     if (bars) {
       clear(bars);
-      const days = Object.entries(logs).sort(([a],[b]) => a.localeCompare(b));
+      const days = Object.entries(logs).sort(([a], [b]) => a.localeCompare(b));
       const max = Math.max(1, ...days.map(([, v]) => v || 0));
       const bf = frag();
       days.slice(-30).forEach(([day, ms]) => {
@@ -407,8 +407,20 @@
 
         const title = `[${row.site}] ${row.episodeTitle} / ${row.workTitle}`;
         const stats = `中央値 ${fmt(row.median)} / 最小 ${fmt(row.min)} / 最大 ${fmt(row.max)} （${row.count}回）`;
-        summary.innerHTML = `<strong>${title}</strong><div class="mono" style="margin-top:4px;">${stats}</div>`;
 
+        // タイトル部分
+        const strongEl = document.createElement("strong");
+        strongEl.textContent = title;
+
+        // サブ情報部分
+        const statsDiv = document.createElement("div");
+        statsDiv.className = "mono";
+        statsDiv.style.marginTop = "4px";
+        statsDiv.textContent = stats;
+
+        // ノードを順に追加
+        summary.appendChild(strongEl);
+        summary.appendChild(statsDiv);
         const divSessions = document.createElement("div"); divSessions.className = "sessions";
         row.sessions.sort((a, b) => b.ms - a.ms).forEach(s => {
           const div = document.createElement("div");
@@ -485,7 +497,7 @@
         [
           { icon: "⏱", label: "合計", value: fmt(w.totalMs) },
           { icon: "📅", label: "最終", value: shortDate(w.latestTs) },
-          { icon: "#",   label: "件数", value: String(w.episodes.length) }
+          { icon: "#", label: "件数", value: String(w.episodes.length) }
         ].forEach(mi => {
           const item = document.createElement("span");
           item.className = "meta-item";
@@ -662,9 +674,9 @@
   function injectTableDataLabels() {
     const defs = {
       tableDaily: ["日付", "読書時間（h:mm:ss）"],
-      tableDetails: ["日付","サイト","作品","話数","時間","時刻","セッション"],
-      tableAggWork: ["サイト","作品","合計時間（h:mm:ss）"],
-      tableAggEpisode: ["作品","話数","セッション合計"],
+      tableDetails: ["日付", "サイト", "作品", "話数", "時間", "時刻", "セッション"],
+      tableAggWork: ["サイト", "作品", "合計時間（h:mm:ss）"],
+      tableAggEpisode: ["作品", "話数", "セッション合計"],
     };
     Object.entries(defs).forEach(([id, headers]) => {
       const table = document.getElementById(id);
@@ -702,19 +714,19 @@
         lastDetails = snap[KEY_DETAILS] || {};
         renderAll();
       });
-    } catch {}
+    } catch { }
     try {
       B?.runtime?.sendMessage({ type: "get-stats" }, (live) => {
         lastLive = (live && typeof live === "object") ? live : { total: 0, daily: 0 };
         renderLive(lastLive);
       });
-    } catch {}
+    } catch { }
     try {
       B?.runtime?.sendMessage({ type: "get-site-enable" }, (cfg) => {
         lastSiteEnable = cfg || {};
         renderToggles(lastSiteEnable);
       });
-    } catch {}
+    } catch { }
   }
 
   // Live updates
@@ -736,7 +748,7 @@
         load();
       }
     });
-  } catch {}
+  } catch { }
 
   // Actions
   $("#resetToday")?.addEventListener("click", () => {
