@@ -35,15 +35,21 @@
     if ($today) $today.textContent = msToHms(daily);
 
     if ($list) {
-      $list.innerHTML = "";
+      // まずリストを空にする
+      while ($list.firstChild) {
+        $list.removeChild($list.firstChild);
+      }
+
       if (Array.isArray(recent) && recent.length) {
         for (const item of recent) {
           const li = document.createElement("li");
+
           const site = item.site || "";
           const work = item.workTitle || "";
           const ep = item.episodeTitle || "";
           const page = item.page ? ` p.${item.page}` : "";
           const time = msToHms(item.ms || 0);
+
           li.textContent = `[${site}] ${work}${ep ? " / " + ep : ""} (${time}${page})`;
           $list.appendChild(li);
         }
@@ -52,6 +58,7 @@
         li.textContent = "履歴がありません";
         $list.appendChild(li);
       }
+
     }
   }
 
@@ -62,7 +69,7 @@
       if (p && typeof p.then === "function") {
         return p.catch(() => undefined);
       }
-    } catch {}
+    } catch { }
     return Promise.resolve(undefined);
   }
 
@@ -70,7 +77,7 @@
     try {
       const payload = await sendMessageSafe({ type: "get-stats" });
       if (payload) renderStats(payload);
-    } catch {}
+    } catch { }
   }
 
   async function resetToday() {
@@ -104,7 +111,7 @@
         }
         return false;
       });
-    } catch {}
+    } catch { }
   }
 
   // 初期化

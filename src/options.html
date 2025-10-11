@@ -1,61 +1,217 @@
 <!DOCTYPE html>
-<html lang="ja">
+<html lang="ja" data-theme="system">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>読書トラッカー詳細管理</title>
-  <link rel="stylesheet" href="options.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>ブックタイマー</title>
+  <meta name="color-scheme" content="light dark" />
+  <link rel="stylesheet" href="options.css" />
 </head>
 <body>
-  <header><h1>読書トラッカー詳細管理</h1></header>
-  <main>
-    <section class="panel live">
-      <h2>ライブ合計</h2>
-      <div class="stats">
-        <div><span class="label">累計</span><span id="liveTotal" class="value">0:00:00</span></div>
-        <div><span class="label">今日（確定）</span><span id="liveToday" class="value">0:00:00</span></div>
+  <!-- Header -->
+  <header class="topbar">
+    <div class="container appbar" role="banner">
+      <div class="brand" aria-label="アプリ名">
+        <div class="logo" aria-hidden="true">⏱️</div>
+        <span class="brand-name truncate-1" title="ブックタイマー">ブックタイマー</span>
       </div>
-    </section>
 
-    <section class="panel">
-      <h2>日別ログ（確定値）</h2>
-      <table id="tableDaily">
-        <thead><tr><th>日付</th><th>読書時間（h:mm:ss）</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </section>
+      <!-- Toolbar (tabs) -->
+      <nav class="toolbar" role="tablist" aria-label="ビュー切り替え">
+        <button id="tab-home" data-view="home" class="tab active" role="tab" aria-controls="view-home" aria-selected="true" title="ホーム">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.2 2.4 11h1.9v9h6.4v-6h2.6v6h6.4v-9h1.9L12 3.2z"/></svg>
+          <span class="label truncate-1">ホーム</span>
+        </button>
+        <button id="tab-library" data-view="library" class="tab" role="tab" aria-controls="view-library" aria-selected="false" title="ライブラリ">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h5a2 2 0 0 1 2 2v12H6a2 2 0 0 1-2-2V5zm9 0h7v14h-7zM6 3h5a4 4 0 0 1 4 4v14H6a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4z"/></svg>
+          <span class="label truncate-1">ライブラリ</span>
+        </button>
+        <button id="tab-log" data-view="log" class="tab" role="tab" aria-controls="view-log" aria-selected="false" title="ログ">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v2H5zM5 8h14v2H5zM5 12h14v2H5zM5 16h14v2H5z"/></svg>
+          <span class="label truncate-1">ログ</span>
+        </button>
+        <button id="tab-stats" data-view="stats" class="tab" role="tab" aria-controls="view-stats" aria-selected="false" title="統計">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h4v7H4zm6-6h4v13h-4zm6-4h4v17h-4z"/></svg>
+          <span class="label truncate-1">統計</span>
+        </button>
+        <button id="tab-settings" data-view="settings" class="tab" role="tab" aria-controls="view-settings" aria-selected="false" title="設定">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 1 2 3 4-1 1 4 4 1-1 4 3 2-3 2 1 4-4 1-1 4-4-1-2 3-2-3-4 1-1-4-4-1 1-4-3-2 3-2-1-4 4-1 1-4 4 1 2-3zM9 12a3 3 0 1 0 6 0 3 3 0 0 0-6 0z"/></svg>
+          <span class="label truncate-1">設定</span>
+        </button>
+      </nav>
+    </div>
+  </header>
 
-    <section class="panel">
-      <h2>作品別詳細（新しい順）</h2>
-      <table id="tableDetails">
-        <thead><tr><th>日付</th><th>サイト</th><th>作品</th><th>話数</th><th>時間（h:mm:ss）</th><th>時刻</th><th>セッション</th></tr></thead>
-        <tbody></tbody>
-      </table>
-      <div class="actions">
-        <button id="resetToday" class="secondary" aria-label="今日の確定記録をリセット">今日の確定記録をリセット</button>
-        <button id="resetAll" class="danger" aria-label="確定記録を全削除">ログを全削除</button>
+  <!-- Main -->
+  <main class="container main">
+    <div class="views" role="presentation">
+
+      <!-- Home -->
+      <section id="view-home" class="view" role="tabpanel" aria-labelledby="tab-home">
+        <div class="home-grid">
+          <!-- Live totals -->
+          <div class="panel home-panel">
+            <h2>ライブ合計 <span class="chip">リアルタイム</span></h2>
+            <div class="stats stats-emphasized">
+              <div class="stat stat-primary">
+                <span class="label">累計</span>
+                <span id="liveTotal" class="value mono" aria-live="polite">0:00:00</span>
+              </div>
+              <div class="stat stat-secondary">
+                <span class="label">今日（確定）</span>
+                <span id="liveToday" class="value mono" aria-live="polite">0:00:00</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Recent works -->
+          <div class="panel home-panel">
+            <h2>最近の作品</h2>
+            <div id="recentWorks" class="grid grid-works">
+              <div class="empty truncate-1" title="まだ記録がありません">まだ記録がありません</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Month summary -->
+        <div class="panel">
+          <h2>今月のサマリ</h2>
+          <div id="monthSummary" class="cards"></div>
+        </div>
+      </section>
+
+      <!-- Library -->
+      <section id="view-library" class="view hidden" role="tabpanel" aria-labelledby="tab-library">
+        <div class="panel">
+          <h2>ライブラリ（作品 → 各話）</h2>
+
+        <div class="actions actions-bar">
+          <input id="filterText" class="input" type="search" placeholder="作品タイトルで検索" aria-label="作品検索" />
+          <select id="sortLibrary" aria-label="並び替え">
+            <option value="recent">最近読んだ順</option>
+            <option value="total">累計時間の多い順</option>
+            <option value="title">タイトル順</option>
+          </select>
+        </div>
+
+        <div id="libraryShelf" class="shelf">
+          <div class="empty truncate-1" title="表示できる作品がありません">表示できる作品がありません</div>
+        </div>
       </div>
-    </section>
+      </section>
 
-    <section class="panel">
-      <h2>サイト有効設定</h2>
-      <div id="siteToggles" class="actions"></div>
-    </section>
+      <!-- Work page -->
+      <section id="view-work" class="view hidden" role="tabpanel" aria-labelledby="tab-work">
+        <div class="panel">
+          <div class="actions actions-bar">
+            <button id="backToLibrary" class="ghost small" aria-label="ライブラリに戻る" title="ライブラリに戻る">← ライブラリに戻る</button>
+          </div>
+          <h2 id="workPageTitle" class="truncate-1" title="作品ページ">作品ページ</h2>
+          <div class="work-page-stats">
+            <div id="workMeta" class="mono truncate-1"></div>
+          </div>
 
-    <section class="panel">
-      <h2>エピソード別統計（セッション内訳）</h2>
-      <table id="tableAggEpisode">
-        <tbody></tbody>
-      </table>
-    </section>
+          <div class="panel">
+            <h3>エピソード一覧</h3>
+            <div id="workEpisodes" class="episodes"></div>
+          </div>
 
-    <section class="panel">
-      <h2>作品別合計</h2>
-      <table id="tableAggWork">
-        <tbody></tbody>
-      </table>
-    </section>
+          <div class="panel">
+            <h3>作品内統計</h3>
+            <div id="workInnerStats" class="cards"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Log -->
+      <section id="view-log" class="view hidden" role="tabpanel" aria-labelledby="tab-log">
+        <div class="panel">
+          <h2>日別ログ（確定値）</h2>
+          <div id="dailyBars" class="bars" aria-label="日別棒グラフ"></div>
+          <div class="table-wrap" aria-live="polite">
+            <table id="tableDaily" class="table table-fixed">
+              <colgroup>
+                <col style="width: 32%;">
+                <col style="width: 68%;">
+              </colgroup>
+              <thead><tr><th>日付</th><th>読書時間（h:mm:ss）</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>作品別詳細（新しい順）</h2>
+          <div class="table-wrap">
+            <table id="tableDetails" class="table table-fixed">
+              <colgroup>
+                <col style="width: 16%"><col style="width: 14%"><col style="width: 30%"><col style="width: 8%"><col style="width: 14%"><col style="width: 10%"><col style="width: 8%">
+              </colgroup>
+              <thead><tr><th>日付</th><th>サイト</th><th>作品</th><th>話数</th><th>時間</th><th>時刻</th><th>セッション</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="actions actions-bar actions-right">
+            <button id="resetToday" class="secondary" aria-label="今日の確定記録をリセット" title="今日の確定記録をリセット">今日の確定記録をリセット</button>
+            <button id="resetAll" class="danger" aria-label="確定記録を全削除" title="確定記録を全削除">ログを全削除</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Stats -->
+      <section id="view-stats" class="view hidden" role="tabpanel" aria-labelledby="tab-stats">
+        <div class="panel">
+          <h2>作品別合計</h2>
+          <div class="table-wrap">
+            <table id="tableAggWork" class="table table-fixed">
+              <colgroup>
+                <col style="width: 18%"><col style="width: 52%"><col style="width: 30%">
+              </colgroup>
+              <thead><tr><th>サイト</th><th>作品</th><th>合計時間（h:mm:ss）</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>エピソード別統計（セッション内訳）</h2>
+          <div class="table-wrap">
+            <table id="tableAggEpisode" class="table table-fixed">
+              <colgroup>
+                <col style="width: 60%"><col style="width: 20%"><col style="width: 20%">
+              </colgroup>
+              <thead><tr><th>作品</th><th>話数</th><th>セッション合計</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Settings -->
+      <section id="view-settings" class="view hidden" role="tabpanel" aria-labelledby="tab-settings">
+        <div class="panel">
+          <h2>テーマ設定</h2>
+          <div class="theme-row">
+            <div class="segmented" role="radiogroup" aria-label="テーマ">
+              <input type="radio" id="theme-system" name="theme" value="system" checked />
+              <label for="theme-system">システム</label>
+              <input type="radio" id="theme-light" name="theme" value="light" />
+              <label for="theme-light">ライト</label>
+              <input type="radio" id="theme-dark" name="theme" value="dark" />
+              <label for="theme-dark">ダーク</label>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>サイト有効設定</h2>
+          <div id="siteToggles" class="actions"></div>
+        </div>
+      </section>
+    </div>
   </main>
-  <script src="options.js"></script>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script defer src="options.js"></script>
 </body>
 </html>

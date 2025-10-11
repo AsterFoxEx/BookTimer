@@ -6,6 +6,8 @@
   2) URL変化すべての経路で restartPolling(tabId) を必ず呼ぶ
      → タイトル確定の取りこぼしを潰す（sigにURLを含める）
   3) 非同期競合を避けるため、タブ単位の直列キュー withTabQueue を維持
+  4) details/pending に url を常に含める
+     → 読み開始時の URL を contentUrlAtStart に保持し、commit/pending に記録
 */
 
 const B = (globalThis.browser ?? globalThis.chrome);
@@ -396,7 +398,8 @@ function makeStateMinimal(tabId, url, title, windowId) {
     pendingShort: null,
     meta: { isContent: false, cert: "none", site: "", workTitle: "", episodeTitle: "", author: "", ncode: undefined, pixivId: undefined },
     loadingStatus: undefined,
-    justUrlChanged: false // URL変化直後の特例フラグ
+    justUrlChanged: false, // URL変化直後の特例フラグ
+    contentUrlAtStart: "" // 読み開始時のURL（details/pending用）
   };
 }
 async function ensureStateFromTab(tabId) {
@@ -499,6 +502,8 @@ async function commitChunk(st, meta, ms, now, startTs) {
     log(1, "commit.skip.nonTitle", { tabId: st.tabId, sessionId: st.sessionId, ms, site: meta?.site }, st, true);
     return;
   }
+  const urlForRecord = st.contentUrlAtStart || st.url || "";
+
   if (ms < SETTINGS.minSessionMs) {
     const prev = st.pendingShort;
     const addition = {
@@ -506,10 +511,12 @@ async function commitChunk(st, meta, ms, now, startTs) {
       site: meta.site, workTitle: meta.workTitle, episodeTitle: meta.episodeTitle, author: meta.author,
       sessionId: st.sessionId,
       ncode: meta.ncode ?? undefined,
-      pixivId: meta.pixivId ?? undefined
+      pixivId: meta.pixivId ?? undefined,
+      url: urlForRecord
     };
     if (prev && sameContentKey(prev, addition)) {
-      prev.ms += addition.ms; prev.stop = addition.stop; st.pendingShort = prev;
+      prev.ms += addition.ms; prev.stop = addition.stop;
+      if (!prev.url) prev.url = addition.url;
       log(1, "pendingShort.add", { tabId: st.tabId, sessionId: st.sessionId, ms: prev.ms }, st);
     } else {
       st.pendingShort = addition;
@@ -533,11 +540,14 @@ async function commitChunk(st, meta, ms, now, startTs) {
       r.episodeTitle === (meta?.episodeTitle || "") &&
       r.sessionId === st.sessionId;
     const ex = list.find(same);
-    if (ex) { ex.ms += part.ms; ex.ts = part.ts; if (meta?.author) ex.author = meta.author; }
-    else {
+    if (ex) {
+      ex.ms += part.ms; ex.ts = part.ts;
+      if (meta?.author) ex.author = meta.author;
+      if (!ex.url) ex.url = urlForRecord;
+    } else {
       list.push({
         site: meta?.site || "", workTitle: meta?.workTitle || "", episodeTitle: meta?.episodeTitle || "",
-        author: meta?.author || "", sessionId: st.sessionId, ms: part.ms, ts: part.ts
+        author: meta?.author || "", sessionId: st.sessionId, ms: part.ms, ts: part.ts, url: urlForRecord
       });
     }
     details[part.day] = list;
@@ -614,7 +624,7 @@ async function stopReading(tabId, now, reason = "STOP") {
       st.pendingSegment = {
         ms: st.segmentAccumMs, stop: now,
         site: st.meta?.site || "", workTitle: st.meta?.workTitle || "", episodeTitle: st.meta?.episodeTitle || "", author: st.meta?.author || "",
-        sessionId: st.sessionId, reason
+        sessionId: st.sessionId, reason, url: st.contentUrlAtStart || st.url || ""
       };
       log(1, "pending.store", { tabId, sessionId: st.sessionId, ms: st.segmentAccumMs, reason }, st);
       st.segmentAccumMs = 0;
@@ -691,6 +701,9 @@ async function startOrContinue(tabId, now) {
         else { log(1, "pending.drop.nomatch", { tabId, sessionId: st.sessionId, ms: p.ms }, st); }
         st.pendingSegment = null;
       }
+
+      // 読み開始時点のURLを保持（詳細保存用）
+      st.contentUrlAtStart = st.url || "";
 
       st.reading = true; st.lastStart = now; st.lastFlushAt = now; st.lastVisibleTs = now;
       st.justUrlChanged = false; // 成功したら特例フラグをクリア
@@ -925,6 +938,7 @@ B.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
     st.url = newUrl; st.isCandidate = isCandidateUrl(newUrl);
     st.sessionId = null;
+    st.contentUrlAtStart = ""; // 次回読み開始で再設定
     st.lastInteraction = now; st.lastVisibleTs = now;
     st.lastVisUpdate = now;
     st.justUrlChanged = true; // URL変化直後の特例フラグをON
@@ -951,6 +965,7 @@ if (B.webNavigation?.onHistoryStateUpdated) {
 
       if (st.reading) { cancelScheduledStop(tabId); await stopReading(tabId, now, "NAVIGATION"); }
       st.url = newUrl; st.isCandidate = isCandidateUrl(newUrl); st.sessionId = null;
+      st.contentUrlAtStart = ""; // 次回読み開始で再設定
       st.lastInteraction = now; st.lastVisibleTs = now; st.lastVisUpdate = now;
       st.justUrlChanged = true; // 特例フラグON
       tabState.set(tabId, st); markHandled(tabId, newUrl, "history");
@@ -989,6 +1004,7 @@ if (B.webNavigation?.onReferenceFragmentUpdated) {
       if (st.reading) { cancelScheduledStop(tabId); await stopReading(tabId, now, "NAVIGATION"); }
       st.isCandidate = isCandidateUrl(newUrl);
       st.url = newUrl; st.sessionId = null;
+      st.contentUrlAtStart = ""; // 次回読み開始で再設定
       st.lastInteraction = now; st.lastVisibleTs = now; st.lastVisUpdate = now;
       st.justUrlChanged = true; // 特例フラグON
       tabState.set(tabId, st); markHandled(tabId, newUrl, "hash");
@@ -1086,6 +1102,7 @@ B.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       } else {
         if (st.reading) { cancelScheduledStop(tabId); await stopReading(tabId, now, "NAVIGATION"); }
         st.url = newUrl; st.isCandidate = isCandidateUrl(st.url); st.sessionId = null;
+        st.contentUrlAtStart = ""; // 次回読み開始で再設定
         st.lastInteraction = now; st.lastVisibleTs = now; st.lastVisUpdate = now;
         st.justUrlChanged = true;
         tabState.set(tabId, st);
