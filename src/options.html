@@ -85,30 +85,39 @@
         <div class="panel">
           <h2>ライブラリ（作品 → 各話）</h2>
 
-        <div class="actions actions-bar">
-          <input id="filterText" class="input" type="search" placeholder="作品タイトルで検索" aria-label="作品検索" />
-          <select id="sortLibrary" aria-label="並び替え">
-            <option value="recent">最近読んだ順</option>
-            <option value="total">累計時間の多い順</option>
-            <option value="title">タイトル順</option>
-          </select>
-        </div>
+          <div class="actions actions-bar">
+            <input id="filterText" class="input" type="search" placeholder="作品タイトルで検索" aria-label="作品検索" />
+            <select id="sortLibrary" aria-label="並び替え">
+              <option value="recent">最近読んだ順</option>
+              <option value="total">累計時間の多い順</option>
+              <option value="title">タイトル順</option>
+            </select>
+          </div>
 
-        <div id="libraryShelf" class="shelf">
-          <div class="empty truncate-1" title="表示できる作品がありません">表示できる作品がありません</div>
+          <div id="libraryShelf" class="shelf">
+            <div class="empty truncate-1" title="表示できる作品がありません">表示できる作品がありません</div>
+          </div>
         </div>
-      </div>
       </section>
 
       <!-- Work page -->
       <section id="view-work" class="view hidden" role="tabpanel" aria-labelledby="tab-work">
         <div class="panel">
-          <div class="actions actions-bar">
-            <button id="backToLibrary" class="ghost small" aria-label="ライブラリに戻る" title="ライブラリに戻る">← ライブラリに戻る</button>
+          <div class="actions actions-bar work-summary">
+            <!-- 左側: タイトル + メタ（PCは横、スマホは縦） -->
+            <div class="work-header">
+              <h2 id="workPageTitle" class="work-title truncate-1" title="作品ページ">作品ページ</h2>
+              <div id="workMeta" class="work-meta mono truncate-1"></div>
+            </div>
+            <!-- 右側: アクション -->
+            <div class="work-actions">
+              <button id="backToLibrary" class="ghost small" aria-label="ライブラリに戻る" title="ライブラリに戻る">← ライブラリに戻る</button>
+            </div>
           </div>
-          <h2 id="workPageTitle" class="truncate-1" title="作品ページ">作品ページ</h2>
+
           <div class="work-page-stats">
-            <div id="workMeta" class="mono truncate-1"></div>
+            <div id="workInnerQuickA" class="stat"><span class="label">今日</span><span class="value mono">0:00:00</span></div>
+            <div id="workInnerQuickB" class="stat"><span class="label">累計</span><span class="value mono">0:00:00</span></div>
           </div>
 
           <div class="panel">

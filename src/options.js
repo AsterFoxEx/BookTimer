@@ -1,10 +1,12 @@
 "use strict";
 /*
-  Firefox向け純CSS/JS/HTML版
-  - innerHTMLは使わず、createElement/appendChildのみ
-  - 2行省略は line-height + max-height
-  - 棒グラフは transform(scaleX)
-  - PCでホーム2枚パネルの高さを揃える（grid align-items: stretch + 子panel height:100%）
+  Firefox向け 純CSS/JS/HTML 版（現行の HTML/CSS 構造に完全対応）
+  - innerHTML を使わず、createElement/appendChild のみ
+  - 2行省略は line-height + max-height（CSS側）
+  - 棒グラフは transform(scaleX)（ARIA付き）
+  - PCでホーム2枚パネル高さ揃え（CSS側の flex で equal height）
+  - モバイル時はテーブルをカード型に自動変換（data-label をJSで注入）
+  - 作品ページは PC:横並び / スマホ:縦並び（既存HTMLの .work-summary/.work-header に準拠）
 */
 
 (() => {
@@ -13,6 +15,7 @@
   // Keys
   const KEY_LOG = "rt_daily_log";
   const KEY_DETAILS = "rt_details";
+  const THEME_KEY = "rt_theme";
 
   // State
   let lastDetails = {};
@@ -21,16 +24,18 @@
   let lastLive = { total: 0, daily: 0 };
 
   // Utils
-  const $ = sel => document.querySelector(sel);
-  function $frag(){ return document.createDocumentFragment(); }
-  function clear(el){ if (el) el.textContent = ""; }
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+  const frag = () => document.createDocumentFragment();
+  const clear = (el) => { if (el) el.textContent = ""; };
+  const pad2 = (n) => String(n).padStart(2, "0");
+
   function fmt(ms) {
     const s = Math.max(0, Math.floor((ms || 0) / 1000));
     const h = Math.floor(s / 3600);
     const m = Math.floor((s % 3600) / 60);
     const sec = s % 60;
-    const pad = n => String(n).padStart(2, "0");
-    return `${h}:${pad(m)}:${pad(sec)}`;
+    return `${h}:${pad2(m)}:${pad2(sec)}`;
   }
   function shortId(id, n = 8) { return String(id || "").slice(0, n); }
   function median(arr) {
@@ -40,26 +45,27 @@
     if (n % 2 === 1) return a[(n - 1) / 2];
     return Math.round((a[n / 2 - 1] + a[n / 2]) / 2);
   }
-  function showToast(msg, ms = 1600) {
-    const t = $("#toast");
-    if (!t) return;
-    t.textContent = msg;
-    t.classList.add("show");
-    window.clearTimeout(showToast._timer);
-    showToast._timer = window.setTimeout(() => t.classList.remove("show"), ms);
-  }
   function shortDate(ts){
     if (!ts) return "-";
     const d = new Date(ts);
-    const mm = String(d.getMonth()+1).padStart(2,'0');
-    const dd = String(d.getDate()).padStart(2,'0');
-    const hh = String(d.getHours()).padStart(2,'0');
-    const mi = String(d.getMinutes()).padStart(2,'0');
+    const mm = pad2(d.getMonth()+1);
+    const dd = pad2(d.getDate());
+    const hh = pad2(d.getHours());
+    const mi = pad2(d.getMinutes());
     return `${mm}/${dd} ${hh}:${mi}`;
   }
 
+  // Toast（バリアント対応）
+  function showToast(msg, ms = 1600, type) {
+    const t = $("#toast");
+    if (!t) return;
+    t.textContent = msg;
+    t.className = `toast show${type ? ' ' + type : ''}`;
+    window.clearTimeout(showToast._timer);
+    showToast._timer = window.setTimeout(() => t.classList.remove("show"), ms);
+  }
+
   // Theme
-  const THEME_KEY = "rt_theme";
   function applyTheme(theme) {
     const root = document.documentElement;
     const value = theme || localStorage.getItem(THEME_KEY) || "system";
@@ -72,21 +78,23 @@
       r.addEventListener("change", () => {
         localStorage.setItem(THEME_KEY, r.value);
         applyTheme(r.value);
-        showToast(`テーマ: ${r.value}`);
+        const labelText = r.labels?.[0]?.textContent ?? r.value;
+        showToast(`テーマを ${labelText} に変更しました`, 1600, "success");
       });
     });
     applyTheme();
   }
 
-  // Views
+  // Tabs / Views
   function switchView(view) {
-    document.querySelectorAll(".tab").forEach(b => {
+    const tabs = $$(".toolbar .tab");
+    tabs.forEach(b => {
       const is = b.dataset.view === view;
       b.classList.toggle("active", is);
       b.setAttribute("aria-selected", String(is));
       if (is) b.focus({ preventScroll: true });
     });
-    document.querySelectorAll(".view").forEach(v => v.classList.add("hidden"));
+    $$(".view").forEach(v => v.classList.add("hidden"));
     const target = document.getElementById(`view-${view}`);
     if (target) target.classList.remove("hidden");
     try {
@@ -96,9 +104,9 @@
     } catch {}
   }
   function bindTabKeyboard() {
-    const tabs = Array.from(document.querySelectorAll(".toolbar .tab"));
+    const tabs = $$(".toolbar .tab");
     const order = tabs.map(t => t.dataset.view);
-    const toolbar = document.querySelector(".toolbar");
+    const toolbar = $(".toolbar");
     if (!toolbar) return;
     toolbar.addEventListener("keydown", (e) => {
       if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
@@ -113,7 +121,7 @@
     });
   }
 
-  // Home: live
+  // Home: Live totals
   function renderLive(live) {
     const tEl = $("#liveTotal");
     const dEl = $("#liveToday");
@@ -121,7 +129,7 @@
     if (dEl) dEl.textContent = fmt((live && live.daily) || 0);
   }
 
-  // Home: recent works
+  // Home: Recent works
   function renderRecentWorks(details) {
     const container = document.getElementById("recentWorks");
     if (!container) return;
@@ -137,7 +145,7 @@
       if (!byWorkTitle.has(k)) byWorkTitle.set(k, r);
     }
 
-    const f = $frag();
+    const f = frag();
     const items = Array.from(byWorkTitle.values()).slice(0, 8);
     if (!items.length) {
       const card = document.createElement("div");
@@ -171,7 +179,7 @@
         actions.className = "actions";
 
         const btnLibrary = document.createElement("button");
-        btnLibrary.className = "secondary";
+        btnLibrary.className = "open-work";
         btnLibrary.textContent = "ライブラリで表示";
         btnLibrary.addEventListener("click", (e) => {
           e.stopPropagation();
@@ -180,19 +188,15 @@
         });
 
         const btnOpen = document.createElement("button");
-        btnOpen.className = "secondary";
+        btnOpen.className = "open-work";
         btnOpen.textContent = "作品ページへ";
         btnOpen.addEventListener("click", (e) => {
           e.stopPropagation();
           openWorkPage(card.dataset.workKey);
         });
 
-        actions.appendChild(btnLibrary);
-        actions.appendChild(btnOpen);
-
-        card.appendChild(title);
-        card.appendChild(meta);
-        card.appendChild(actions);
+        actions.append(btnLibrary, btnOpen);
+        card.append(title, meta, actions);
         card.addEventListener("click", () => openWorkPage(card.dataset.workKey));
         f.appendChild(card);
       });
@@ -200,16 +204,16 @@
     container.appendChild(f);
   }
 
-  // Month summary
+  // Home: Month summary
   function renderMonthSummary(logs) {
     const container = document.getElementById("monthSummary");
     if (!container) return;
     clear(container);
 
     const now = new Date();
-    const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    const ym = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}`;
     const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    const pYm = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, "0")}`;
+    const pYm = `${prev.getFullYear()}-${pad2(prev.getMonth() + 1)}`;
     let totalMonth = 0, days = 0;
     let totalPrev = 0, pDays = 0;
     Object.entries(logs).forEach(([day, ms]) => {
@@ -227,7 +231,7 @@
       { label: "前月比（平均差）", value: `${diff >= 0 ? "+" : ""}${fmt(diff)}` }
     ];
 
-    const f = $frag();
+    const f = frag();
     items.forEach(it => {
       const card = document.createElement("div");
       card.className = "card";
@@ -237,59 +241,70 @@
       const meta = document.createElement("div");
       meta.className = "meta mono";
       meta.textContent = it.value;
-      card.appendChild(title);
-      card.appendChild(meta);
+      card.append(title, meta);
       f.appendChild(card);
     });
     container.appendChild(f);
   }
 
-  // Log: daily
+  // Log: daily table + bars
   function renderDaily(logs) {
-    const tbody = document.querySelector("#tableDaily tbody");
-    if (!tbody) return;
-    clear(tbody);
-    const f = $frag();
-    Object.entries(logs).sort(([a],[b]) => a.localeCompare(b)).forEach(([day, ms]) => {
-      const tr = document.createElement("tr");
-      const tdDay = document.createElement("td"); tdDay.textContent = day;
-      const tdMs = document.createElement("td"); tdMs.className = "mono"; tdMs.textContent = fmt(ms || 0);
-      tr.appendChild(tdDay); tr.appendChild(tdMs);
-      f.appendChild(tr);
-    });
-    tbody.appendChild(f);
+    // Table
+    const tbody = $("#tableDaily tbody");
+    if (tbody) {
+      clear(tbody);
+      const f = frag();
+      Object.entries(logs).sort(([a],[b]) => a.localeCompare(b)).forEach(([day, ms]) => {
+        const tr = document.createElement("tr");
+        const tdDay = document.createElement("td"); tdDay.textContent = day;
+        const tdMs = document.createElement("td"); tdMs.className = "mono"; tdMs.textContent = fmt(ms || 0);
+        tr.append(tdDay, tdMs);
+        f.appendChild(tr);
+      });
+      tbody.appendChild(f);
+    }
 
-    const bars = document.getElementById("dailyBars");
+    // Bars
+    const bars = $("#dailyBars");
     if (bars) {
       clear(bars);
       const days = Object.entries(logs).sort(([a],[b]) => a.localeCompare(b));
       const max = Math.max(1, ...days.map(([, v]) => v || 0));
-      const bf = $frag();
+      const bf = frag();
       days.slice(-30).forEach(([day, ms]) => {
         const wrap = document.createElement("div"); wrap.className = "bar";
         const label = document.createElement("div"); label.className = "label"; label.textContent = day.slice(5);
+
         const gauge = document.createElement("div"); gauge.className = "gauge";
+        gauge.setAttribute("role", "progressbar");
+        gauge.setAttribute("aria-valuemin", "0");
+        gauge.setAttribute("aria-valuemax", String(max));
+        gauge.setAttribute("aria-valuenow", String(ms || 0));
+
         const fill = document.createElement("div"); fill.className = "fill";
         gauge.appendChild(fill);
         const ratio = Math.max(0, Math.min(1, ((ms || 0) / max)));
         requestAnimationFrame(() => { fill.style.transform = `scaleX(${ratio})`; });
+
         const value = document.createElement("div"); value.className = "value mono"; value.textContent = fmt(ms || 0);
-        wrap.appendChild(label); wrap.appendChild(gauge); wrap.appendChild(value);
+        wrap.append(label, gauge, value);
         bf.appendChild(wrap);
       });
       bars.appendChild(bf);
     }
+
+    injectTableDataLabels();
   }
 
-  // Details
+  // Details (作品別詳細テーブル)
   function renderDetails(details) {
-    const tbody = document.querySelector("#tableDetails tbody");
+    const tbody = $("#tableDetails tbody");
     if (!tbody) return;
     clear(tbody);
     const rows = [];
     Object.entries(details).forEach(([day, list]) => (list || []).forEach(r => rows.push({ day, ...r })));
     rows.sort((a, b) => (b.ts || 0) - (a.ts || 0));
-    const f = $frag();
+    const f = frag();
     rows.forEach(r => {
       const tr = document.createElement("tr");
       const tdDay = document.createElement("td"); tdDay.textContent = r.day || "";
@@ -297,17 +312,18 @@
       const tdWork = document.createElement("td"); tdWork.className = "mono"; tdWork.textContent = r.workTitle || "";
       const tdEp = document.createElement("td"); tdEp.className = "mono"; tdEp.textContent = r.episodeTitle || "";
       const tdMs = document.createElement("td"); tdMs.className = "mono"; tdMs.textContent = fmt(r.ms || 0);
-      const tdTs = document.createElement("td"); tdTs.textContent = (r.ts ? new Date(r.ts).toLocaleString() : "");
+      const tdTs = document.createElement("td"); tdTs.textContent = shortDate(r.ts || 0);
       const tdSess = document.createElement("td"); tdSess.className = "mono"; tdSess.textContent = shortId(r.sessionId || "no-session");
-      tr.appendChild(tdDay); tr.appendChild(tdSite); tr.appendChild(tdWork); tr.appendChild(tdEp); tr.appendChild(tdMs); tr.appendChild(tdTs); tr.appendChild(tdSess);
+      tr.append(tdDay, tdSite, tdWork, tdEp, tdMs, tdTs, tdSess);
       f.appendChild(tr);
     });
     tbody.appendChild(f);
+    injectTableDataLabels();
   }
 
-  // Aggregates: work
+  // Aggregates: work totals
   function renderWorkAggregates(details) {
-    const workTbody = document.querySelector("#tableAggWork tbody");
+    const workTbody = $("#tableAggWork tbody");
     if (!workTbody) return;
     clear(workTbody);
     const byWork = {};
@@ -317,7 +333,7 @@
         byWork[k] = (byWork[k] || 0) + (r.ms || 0);
       });
     });
-    const f = $frag();
+    const f = frag();
     Object.entries(byWork)
       .map(([k, ms]) => {
         const [site, workTitle] = k.split("|");
@@ -329,15 +345,16 @@
         const tdSite = document.createElement("td"); tdSite.textContent = row.site;
         const tdWork = document.createElement("td"); tdWork.className = "mono"; tdWork.textContent = row.workTitle || "";
         const tdMs = document.createElement("td"); tdMs.className = "mono"; tdMs.textContent = fmt(row.ms);
-        tr.appendChild(tdSite); tr.appendChild(tdWork); tr.appendChild(tdMs);
+        tr.append(tdSite, tdWork, tdMs);
         f.appendChild(tr);
       });
     workTbody.appendChild(f);
+    injectTableDataLabels();
   }
 
   // Aggregates: episode sessions
   function renderAggregates(details) {
-    const epTbody = document.querySelector("#tableAggEpisode tbody");
+    const epTbody = $("#tableAggEpisode tbody");
     if (!epTbody) return;
     clear(epTbody);
     const bySessionTotal = {};
@@ -367,7 +384,7 @@
       statsByEpisode[epKey].sessions.push({ sessionId, ms });
     });
 
-    const f = $frag();
+    const f = frag();
     Object.values(statsByEpisode)
       .map(v => {
         const totals = v.totals;
@@ -387,7 +404,11 @@
         const td = document.createElement("td"); td.setAttribute("colspan", "3");
         const detailsEl = document.createElement("details");
         const summary = document.createElement("summary");
-        summary.textContent = `[${row.site}] ${row.episodeTitle} / ${row.workTitle} — 中央 ${fmt(row.median)} / 最小 ${fmt(row.min)} / 最大 ${fmt(row.max)} （${row.count}回）`;
+
+        const title = `[${row.site}] ${row.episodeTitle} / ${row.workTitle}`;
+        const stats = `中央値 ${fmt(row.median)} / 最小 ${fmt(row.min)} / 最大 ${fmt(row.max)} （${row.count}回）`;
+        summary.innerHTML = `<strong>${title}</strong><div class="mono" style="margin-top:4px;">${stats}</div>`;
+
         const divSessions = document.createElement("div"); divSessions.className = "sessions";
         row.sessions.sort((a, b) => b.ms - a.ms).forEach(s => {
           const div = document.createElement("div");
@@ -395,13 +416,14 @@
           div.textContent = `session ${shortId(s.sessionId)}: ${fmt(s.ms)}`;
           divSessions.appendChild(div);
         });
-        detailsEl.appendChild(summary);
-        detailsEl.appendChild(divSessions);
+
+        detailsEl.append(summary, divSessions);
         td.appendChild(detailsEl);
         tr.appendChild(td);
         f.appendChild(tr);
       });
     epTbody.appendChild(f);
+    injectTableDataLabels();
   }
 
   // Library grouping
@@ -421,14 +443,15 @@
     return byWork;
   }
 
+  // Library render（HTML/CSSの lib-* 構造に準拠）
   function renderLibrary(details) {
     const container = document.getElementById("libraryShelf");
     if (!container) return;
     clear(container);
     const grouped = groupByWork(details);
 
-    const q = (document.getElementById("filterText")?.value || "").trim().toLowerCase();
-    const sortKey = document.getElementById("sortLibrary")?.value || "recent";
+    const q = ($("#filterText")?.value || "").trim().toLowerCase();
+    const sortKey = $("#sortLibrary")?.value || "recent";
 
     let works = Object.values(grouped);
     if (q) works = works.filter(w => (w.workTitle || "").toLowerCase().includes(q));
@@ -438,7 +461,7 @@
       return (b.latestTs - a.latestTs);
     });
 
-    const f = $frag();
+    const f = frag();
     if (!works.length) {
       const empty = document.createElement("div");
       empty.className = "empty";
@@ -458,14 +481,12 @@
 
         const meta = document.createElement("span");
         meta.className = "lib-meta";
-
-        const metaFrag = $frag();
-        const metaItems = [
+        const metaFrag = frag();
+        [
           { icon: "⏱", label: "合計", value: fmt(w.totalMs) },
           { icon: "📅", label: "最終", value: shortDate(w.latestTs) },
-          { icon: "#", label: "件数", value: String(w.episodes.length) }
-        ];
-        metaItems.forEach(mi => {
+          { icon: "#",   label: "件数", value: String(w.episodes.length) }
+        ].forEach(mi => {
           const item = document.createElement("span");
           item.className = "meta-item";
 
@@ -479,7 +500,7 @@
           const val = document.createElement("span");
           val.className = "value mono"; val.textContent = mi.value;
 
-          item.appendChild(ic); item.appendChild(lab); item.appendChild(val);
+          item.append(ic, lab, val);
           metaFrag.appendChild(item);
         });
         meta.appendChild(metaFrag);
@@ -488,45 +509,49 @@
         actions.className = "lib-actions";
 
         const focusBtn = document.createElement("button");
-        focusBtn.className = "secondary";
+        focusBtn.className = "open-work";
         focusBtn.textContent = "ライブラリで表示";
         focusBtn.addEventListener("click", (e) => {
           e.preventDefault(); e.stopPropagation();
           detailsEl.open = true;
           detailsEl.scrollIntoView({ behavior: "smooth", block: "center" });
           detailsEl.classList.add("highlight");
-          setTimeout(() => detailsEl.classList.remove("highlight"), 2000);
+          setTimeout(() => detailsEl.classList.remove("highlight"), 2400);
         });
 
         const openBtn = document.createElement("button");
-        openBtn.className = "secondary";
+        openBtn.className = "open-work";
+
         openBtn.textContent = "作品ページへ";
         openBtn.addEventListener("click", (e) => {
           e.preventDefault(); e.stopPropagation();
           openWorkPage(detailsEl.dataset.workKey);
         });
 
-        actions.appendChild(focusBtn);
-        actions.appendChild(openBtn);
+        actions.append(focusBtn, openBtn);
 
-        summary.appendChild(leftTitle);
-        summary.appendChild(actions);
-        summary.appendChild(meta);
-
+        // episodes list (expanded)
         const list = document.createElement("div"); list.className = "episodes";
-        w.episodes.sort((a, b) => a.ts - b.ts).forEach(ep => {
-          const row = document.createElement("div"); row.className = "episode";
-          const aEl = document.createElement("a");
-          aEl.href = ep.url || "#"; aEl.target = "_blank"; aEl.rel = "noopener";
-          aEl.textContent = ep.episodeTitle || "(no title)";
-          const time = document.createElement("span"); time.className = "mono"; time.textContent = fmt(ep.ms || 0);
-          const when = document.createElement("span"); when.className = "mono"; when.textContent = shortDate(ep.ts || 0);
-          row.appendChild(aEl); row.appendChild(time); row.appendChild(when);
-          list.appendChild(row);
-        });
+        w.episodes
+          .sort((a, b) => a.ts - b.ts)
+          .forEach(ep => {
+            const row = document.createElement("div"); row.className = "episode";
+            const aEl = document.createElement("a");
+            aEl.href = ep.url || "#"; aEl.target = "_blank"; aEl.rel = "noopener";
+            aEl.textContent = ep.episodeTitle || "(no title)";
+            const time = document.createElement("span"); time.className = "mono muted"; time.textContent = fmt(ep.ms || 0);
+            const when = document.createElement("span"); when.className = "mono muted"; when.textContent = shortDate(ep.ts || 0);
+            row.append(aEl, time, when);
+            list.appendChild(row);
+          });
 
-        detailsEl.appendChild(summary);
-        detailsEl.appendChild(list);
+        // order: Title → Meta → Actions（スマホ縦並びでも自然）
+        summary.append(leftTitle);
+        summary.append(meta);
+        summary.append(actions);
+
+        detailsEl.append(summary);
+        detailsEl.append(list);
         f.appendChild(detailsEl);
       });
     }
@@ -539,35 +564,37 @@
     el.open = true;
     el.scrollIntoView({ behavior: "smooth", block: "center" });
     el.classList.add("highlight");
-    setTimeout(() => el.classList.remove("highlight"), 2000);
+    setTimeout(() => el.classList.remove("highlight"), 2400);
   }
 
-  // Work page
+  // Work page（現行HTMLの .work-summary/.work-header に準拠）
   function openWorkPage(workKey) {
     const grouped = groupByWork(lastDetails);
     const w = grouped[workKey];
-    if (!w) { showToast("作品データが見つかりません"); return; }
+    if (!w) { showToast("作品データが見つかりません", 1600, "error"); return; }
 
     const titleEl = document.getElementById("workPageTitle");
     const metaEl = document.getElementById("workMeta");
-    if (titleEl) titleEl.textContent = `[${w.site}] ${w.workTitle}`;
-    if (metaEl) metaEl.textContent = `合計 ${fmt(w.totalMs)} ／ 最終 ${shortDate(w.latestTs)} ／ ${w.episodes.length}件`;
+    if (titleEl) titleEl.textContent = w.workTitle || "(タイトルなし)";
+    if (metaEl) metaEl.textContent = `サイト: ${w.site} / 合計: ${fmt(w.totalMs)} / 最終: ${shortDate(w.latestTs)} / 件数: ${w.episodes.length}`;
 
+    // episodes (最新順)
     const listEl = document.getElementById("workEpisodes");
     clear(listEl);
-    const ef = $frag();
+    const ef = frag();
     w.episodes.sort((a, b) => b.ts - a.ts).forEach(ep => {
       const row = document.createElement("div"); row.className = "episode";
       const aEl = document.createElement("a");
       aEl.href = ep.url || "#"; aEl.target = "_blank"; aEl.rel = "noopener";
       aEl.textContent = ep.episodeTitle || "(no title)";
-      const time = document.createElement("span"); time.className = "mono"; time.textContent = fmt(ep.ms || 0);
-      const when = document.createElement("span"); when.className = "mono"; when.textContent = shortDate(ep.ts || 0);
-      row.appendChild(aEl); row.appendChild(time); row.appendChild(when);
+      const time = document.createElement("span"); time.className = "mono muted"; time.textContent = fmt(ep.ms || 0);
+      const when = document.createElement("span"); when.className = "mono muted"; when.textContent = shortDate(ep.ts || 0);
+      row.append(aEl, time, when);
       ef.appendChild(row);
     });
     listEl.appendChild(ef);
 
+    // inner stats（セッション単位の分布）
     const totalsBySession = {};
     w.episodes.forEach(ep => {
       const sid = ep.sessionId || "no-session";
@@ -576,9 +603,9 @@
     const totalsArr = Object.values(totalsBySession);
     const cards = document.getElementById("workInnerStats");
     clear(cards);
-    const cf = $frag();
+    const cf = frag();
     [
-      { label: "合計", value: fmt(w.totalMs) },
+      { label: "作品内合計", value: fmt(w.totalMs) },
       { label: "中央値（セッション）", value: fmt(median(totalsArr)) },
       { label: "最小（セッション）", value: fmt(totalsArr.length ? Math.min(...totalsArr) : 0) },
       { label: "最大（セッション）", value: fmt(totalsArr.length ? Math.max(...totalsArr) : 0) },
@@ -591,8 +618,7 @@
       const meta = document.createElement("div");
       meta.className = "meta mono";
       meta.textContent = it.value;
-      card.appendChild(title);
-      card.appendChild(meta);
+      card.append(title, meta);
       cf.appendChild(card);
     });
     cards.appendChild(cf);
@@ -600,13 +626,13 @@
     switchView("work");
   }
 
-  // Site toggles
+  // Site toggles（Settings）
   function renderToggles(cfg) {
     const div = document.getElementById("siteToggles");
     if (!div) return;
     clear(div);
     const sites = Object.keys(cfg).length ? Object.keys(cfg) : ["kakuyomu.jp", "syosetu.org", "pixiv.net", "syosetu.com"];
-    const f = $frag();
+    const f = frag();
     sites.forEach(domain => {
       const label = document.createElement("label");
       label.style.display = "inline-flex";
@@ -618,17 +644,39 @@
       input.addEventListener("change", (e) => {
         try {
           B.runtime.sendMessage({ type: "set-site-enable", domain, enabled: e.target.checked }, (resp) => {
-            showToast(resp && resp.ok ? `${domain}: ${e.target.checked ? "有効化" : "無効化"}` : "更新に失敗しました");
+            showToast(resp && resp.ok ? `${domain}: ${e.target.checked ? "有効化" : "無効化"}` : "更新に失敗しました", 1600, resp?.ok ? (e.target.checked ? "success" : "warn") : "error");
           });
-        } catch {}
+        } catch {
+          showToast("更新に失敗しました", 1600, "error");
+        }
       });
       const span = document.createElement("span");
       span.textContent = ` ${domain}`;
-      label.appendChild(input);
-      label.appendChild(span);
+      label.append(input, span);
       f.appendChild(label);
     });
     div.appendChild(f);
+  }
+
+  // Tables: mobile card labels injection（スマホカード型への橋渡し）
+  function injectTableDataLabels() {
+    const defs = {
+      tableDaily: ["日付", "読書時間（h:mm:ss）"],
+      tableDetails: ["日付","サイト","作品","話数","時間","時刻","セッション"],
+      tableAggWork: ["サイト","作品","合計時間（h:mm:ss）"],
+      tableAggEpisode: ["作品","話数","セッション合計"],
+    };
+    Object.entries(defs).forEach(([id, headers]) => {
+      const table = document.getElementById(id);
+      if (!table) return;
+      table.querySelectorAll("tbody tr").forEach(tr => {
+        tr.querySelectorAll("td").forEach((td, i) => {
+          if (!td.hasAttribute("data-label") && headers[i]) {
+            td.setAttribute("data-label", headers[i]);
+          }
+        });
+      });
+    });
   }
 
   // Composite render
@@ -642,6 +690,7 @@
     renderAggregates(lastDetails);
     renderLibrary(lastDetails);
     renderToggles(lastSiteEnable);
+    injectTableDataLabels();
   }
 
   // Load
@@ -683,46 +732,46 @@
         lastDetails = snap[KEY_DETAILS] || lastDetails;
         renderAll();
       } else if (msg?.type === "import-store") {
-        showToast("データをインポートしました");
+        showToast("データをインポートしました", 1600, "success");
         load();
       }
     });
   } catch {}
 
   // Actions
-  document.getElementById("resetToday")?.addEventListener("click", () => {
+  $("#resetToday")?.addEventListener("click", () => {
     if (!confirm("今日のログを消去します。よろしいですか？")) return;
     try {
       B.runtime.sendMessage({ type: "reset-today" }, (resp) => {
         if (!(resp && resp.ok)) alert("reset-today に失敗しました");
-        else showToast("今日のログをリセットしました");
+        else showToast("今日のログをリセットしました", 1600, "warn");
         load();
       });
     } catch { load(); }
   });
-  document.getElementById("resetAll")?.addEventListener("click", () => {
+  $("#resetAll")?.addEventListener("click", () => {
     if (!confirm("全てのログを消去します。よろしいですか？")) return;
     try {
       B.runtime.sendMessage({ type: "reset-all" }, (resp) => {
         if (!(resp && resp.ok)) alert("reset-all に失敗しました");
-        else showToast("全ログを削除しました");
+        else showToast("全ログを削除しました", 1600, "error");
         load();
       });
     } catch { load(); }
   });
-  document.getElementById("backToLibrary")?.addEventListener("click", () => {
+  $("#backToLibrary")?.addEventListener("click", () => {
     switchView("library");
   });
 
   // Toolbar navigation
-  document.querySelectorAll(".toolbar .tab").forEach(btn => {
+  $$(".toolbar .tab").forEach(btn => {
     btn.addEventListener("click", () => switchView(btn.dataset.view));
   });
   bindTabKeyboard();
 
   // Filters in library
-  document.getElementById("filterText")?.addEventListener("input", () => renderLibrary(lastDetails));
-  document.getElementById("sortLibrary")?.addEventListener("change", () => renderLibrary(lastDetails));
+  $("#filterText")?.addEventListener("input", () => renderLibrary(lastDetails));
+  $("#sortLibrary")?.addEventListener("change", () => renderLibrary(lastDetails));
 
   // Init
   document.addEventListener("DOMContentLoaded", () => {
