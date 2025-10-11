@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>読書トラッカー詳細管理</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <header><h1>読書トラッカー詳細管理</h1></header>
+  <main>
+    <section class="panel live">
+      <h2>ライブ合計</h2>
+      <div class="stats">
+        <div><span class="label">累計</span><span id="liveTotal" class="value">0:00:00</span></div>
+        <div><span class="label">今日（確定）</span><span id="liveToday" class="value">0:00:00</span></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>日別ログ（確定値）</h2>
+      <table id="tableDaily">
+        <thead><tr><th>日付</th><th>読書時間（h:mm:ss）</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2>作品別詳細（新しい順）</h2>
+      <table id="tableDetails">
+        <thead><tr><th>日付</th><th>サイト</th><th>作品</th><th>話数</th><th>時間（h:mm:ss）</th><th>時刻</th><th>セッション</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="actions">
+        <button id="resetToday" class="secondary" aria-label="今日の確定記録をリセット">今日の確定記録をリセット</button>
+        <button id="resetAll" class="danger" aria-label="確定記録を全削除">ログを全削除</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>サイト有効設定</h2>
+      <div id="siteToggles" class="actions"></div>
+    </section>
+
+    <section class="panel">
+      <h2>エピソード別統計（セッション内訳）</h2>
+      <table id="tableAggEpisode">
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2>作品別合計</h2>
+      <table id="tableAggWork">
+        <tbody></tbody>
+      </table>
+    </section>
+  </main>
+  <script src="options.js"></script>
+</body>
+</html>

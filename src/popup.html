@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>読書トラッカー</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header><h1>読書トラッカー</h1></header>
+  <main>
+    <div class="stat"><span class="label">累計</span><span id="totalTime" class="value">0:00:00</span></div>
+    <div class="stat"><span class="label">今日（確定）</span><span id="todayTime" class="value">0:00:00</span></div>
+
+    <section class="panel">
+      <h2>今日の履歴（新しい順・最大5件）</h2>
+      <ul id="titleList" class="titles"></ul>
+    </section>
+
+    <div class="controls">
+      <button id="resetToday" class="secondary" aria-label="今日の確定記録をリセット">今日の確定記録をリセット</button>
+      <button id="resetAll" class="danger" aria-label="全ての確定記録を削除">総計リセット</button>
+    </div>
+
+    <a class="link" href="options.html" target="_blank" aria-label="詳細管理ページを開く">詳細管理ページへ</a>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,126 @@
+/* options.css — simple, mobile-first, responsive */
+
+/* ===== 基本変数 ===== */
+:root {
+  --primary: #2563eb;
+  --danger: #e11d48;
+  --bg: #f9fafb;
+  --surface: #fff;
+  --text: #111827;
+  --muted: #6b7280;
+  --border: #e5e7eb;
+
+  --font-s: 14px;
+  --font-m: 16px;
+  --font-l: 18px;
+
+  --space-s: 6px;
+  --space-m: 12px;
+  --space-l: 16px;
+
+  --radius: 8px;
+}
+
+/* ===== Reset & Base ===== */
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, sans-serif;
+  font-size: var(--font-s);
+  line-height: 1.5;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* ===== Header ===== */
+header {
+  background: var(--primary);
+  color: #fff;
+  padding: var(--space-m);
+  text-align: center;
+}
+header h1 {
+  margin: 0;
+  font-size: var(--font-l);
+  font-weight: 700;
+}
+
+/* ===== Layout ===== */
+main {
+  padding: var(--space-m);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-m);
+}
+
+/* ===== Panel ===== */
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-m);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-s);
+}
+
+/* ===== Stats ===== */
+.stats {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-s);
+}
+.stats .label { color: var(--muted); font-weight: 600; }
+.stats .value { color: var(--primary); font-weight: 700; font-size: var(--font-m); }
+
+/* ===== Actions ===== */
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-s);
+  margin-top: var(--space-m);
+}
+button {
+  display: block;
+  width: 100%;
+  padding: var(--space-s) var(--space-m);
+  font-size: var(--font-m);
+  font-weight: 700;
+  border-radius: var(--radius);
+  border: none;
+  cursor: pointer;
+}
+button.primary { background: var(--primary); color: #fff; }
+button.secondary { background: var(--surface); border: 1px solid var(--primary); color: var(--primary); }
+button.danger { background: var(--danger); color: #fff; }
+
+/* ===== Table ===== */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-s);
+}
+thead th {
+  background: #f3f4f6;
+  color: var(--muted);
+  font-weight: 700;
+  padding: var(--space-s);
+  border-bottom: 1px solid var(--border);
+}
+tbody td {
+  padding: var(--space-s);
+  border-bottom: 1px solid var(--border);
+  text-align: center;
+}
+tbody tr:hover { background: #f9fafb; }
+
+/* ===== Mono helpers ===== */
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+
+/* ===== Responsive ===== */
+@media (min-width: 600px) {
+  .actions { flex-direction: row; }
+  .actions button, .actions label { flex: 1; }
+}

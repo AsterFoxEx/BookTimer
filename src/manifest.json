@@ -1,0 +1,57 @@
+{
+  "manifest_version": 2,
+  "name": "ブックタイマー",
+  "version": "1.0.5",
+  "description": "対応小説サイトでの読書時間を自動計測し、日別・累計・作品別に集計。ポップアップや設定画面でリアルタイムに確認できます。",
+  "permissions": [
+    "storage",
+    "tabs",
+    "webNavigation",
+    "alarms",
+    "*://kakuyomu.jp/*",
+    "*://syosetu.org/*",
+    "*://syosetu.com/*",
+    "*://pixiv.net/*",
+    "https://api.syosetu.com/*"
+  ],
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://kakuyomu.jp/*",
+        "https://ncode.syosetu.com/*",
+        "https://syosetu.org/*",
+        "https://www.pixiv.net/novel/show.php*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "browser_action": {
+    "default_title": "ブックタイマー",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon.png",
+      "48": "icons/icon.png",
+      "128": "icons/icon.png"
+    }
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true,
+    "browser_style": true
+  },
+  "icons": {
+    "16": "icons/icon.png",
+    "48": "icons/icon.png",
+    "128": "icons/icon.png"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "shin2222good@gmail.com",
+      "strict_min_version": "79.0"
+    }
+  }
+}
