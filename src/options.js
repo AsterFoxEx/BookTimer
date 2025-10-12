@@ -2,9 +2,7 @@
 /*
   Firefox向け 純CSS/JS/HTML 版（現行の HTML/CSS 構造に完全対応）
   - innerHTML を使わず、createElement/appendChild のみ
-  - 2行省略は line-height + max-height（CSS側）
   - 棒グラフは transform(scaleX)（ARIA付き）
-  - PCでホーム2枚パネル高さ揃え（CSS側の flex で equal height）
   - モバイル時はテーブルをカード型に自動変換（data-label をJSで注入）
   - 作品ページは PC:横並び / スマホ:縦並び（既存HTMLの .work-summary/.work-header に準拠）
 */
@@ -44,6 +42,15 @@
     const n = a.length;
     if (n % 2 === 1) return a[(n - 1) / 2];
     return Math.round((a[n / 2 - 1] + a[n / 2]) / 2);
+  }
+  function percentile(arr, p) {
+    if (!arr || !arr.length) return 0;
+    const a = [...arr].sort((x, y) => x - y);
+    const idx = (a.length - 1) * p;
+    const lo = Math.floor(idx), hi = Math.ceil(idx);
+    if (lo === hi) return a[lo];
+    const w = idx - lo;
+    return Math.round(a[lo] * (1 - w) + a[hi] * w);
   }
   function shortDate(ts) {
     if (!ts) return "-";
@@ -94,6 +101,7 @@
       b.setAttribute("aria-selected", String(is));
       if (is) b.focus({ preventScroll: true });
     });
+
     $$(".view").forEach(v => v.classList.add("hidden"));
     const target = document.getElementById(`view-${view}`);
     if (target) target.classList.remove("hidden");
@@ -264,26 +272,29 @@
       tbody.appendChild(f);
     }
 
-    // Bars
+    // Bars（相対 + 上限付き ＝ 極端値の影響を抑制）
     const bars = $("#dailyBars");
     if (bars) {
       clear(bars);
       const days = Object.entries(logs).sort(([a], [b]) => a.localeCompare(b));
-      const max = Math.max(1, ...days.map(([, v]) => v || 0));
+      const recent = days.slice(-30);
+      const values = recent.map(([, v]) => v || 0);
+      const capMax = Math.max(1, values.length >= 5 ? percentile(values, 0.95) : Math.max(1, ...values));
       const bf = frag();
-      days.slice(-30).forEach(([day, ms]) => {
+      recent.forEach(([day, ms]) => {
         const wrap = document.createElement("div"); wrap.className = "bar";
         const label = document.createElement("div"); label.className = "label"; label.textContent = day.slice(5);
 
         const gauge = document.createElement("div"); gauge.className = "gauge";
         gauge.setAttribute("role", "progressbar");
         gauge.setAttribute("aria-valuemin", "0");
-        gauge.setAttribute("aria-valuemax", String(max));
-        gauge.setAttribute("aria-valuenow", String(ms || 0));
+        gauge.setAttribute("aria-valuemax", String(capMax));
+        const nowVal = Math.min(ms || 0, capMax);
+        gauge.setAttribute("aria-valuenow", String(nowVal));
 
         const fill = document.createElement("div"); fill.className = "fill";
         gauge.appendChild(fill);
-        const ratio = Math.max(0, Math.min(1, ((ms || 0) / max)));
+        const ratio = Math.max(0, Math.min(1, (nowVal / capMax)));
         requestAnimationFrame(() => { fill.style.transform = `scaleX(${ratio})`; });
 
         const value = document.createElement("div"); value.className = "value mono"; value.textContent = fmt(ms || 0);
@@ -408,19 +419,21 @@
         const title = `[${row.site}] ${row.episodeTitle} / ${row.workTitle}`;
         const stats = `中央値 ${fmt(row.median)} / 最小 ${fmt(row.min)} / 最大 ${fmt(row.max)} （${row.count}回）`;
 
-        // タイトル部分
-        const strongEl = document.createElement("strong");
-        strongEl.textContent = title;
+        // タイトル（1行省略）
+        const titleSpan = document.createElement("span");
+        titleSpan.className = "ep-title truncate-1";
+        titleSpan.title = title;
+        titleSpan.textContent = title;
 
-        // サブ情報部分
+        // サブ情報
         const statsDiv = document.createElement("div");
         statsDiv.className = "mono";
         statsDiv.style.marginTop = "4px";
         statsDiv.textContent = stats;
 
-        // ノードを順に追加
-        summary.appendChild(strongEl);
+        summary.appendChild(titleSpan);
         summary.appendChild(statsDiv);
+
         const divSessions = document.createElement("div"); divSessions.className = "sessions";
         row.sessions.sort((a, b) => b.ms - a.ms).forEach(s => {
           const div = document.createElement("div");
@@ -579,64 +592,83 @@
     setTimeout(() => el.classList.remove("highlight"), 2400);
   }
 
-  // Work page（現行HTMLの .work-summary/.work-header に準拠）
+  // Work page
   function openWorkPage(workKey) {
-    const grouped = groupByWork(lastDetails);
-    const w = grouped[workKey];
-    if (!w) { showToast("作品データが見つかりません", 1600, "error"); return; }
-
-    const titleEl = document.getElementById("workPageTitle");
-    const metaEl = document.getElementById("workMeta");
-    if (titleEl) titleEl.textContent = w.workTitle || "(タイトルなし)";
-    if (metaEl) metaEl.textContent = `サイト: ${w.site} / 合計: ${fmt(w.totalMs)} / 最終: ${shortDate(w.latestTs)} / 件数: ${w.episodes.length}`;
-
-    // episodes (最新順)
-    const listEl = document.getElementById("workEpisodes");
-    clear(listEl);
-    const ef = frag();
-    w.episodes.sort((a, b) => b.ts - a.ts).forEach(ep => {
-      const row = document.createElement("div"); row.className = "episode";
-      const aEl = document.createElement("a");
-      aEl.href = ep.url || "#"; aEl.target = "_blank"; aEl.rel = "noopener";
-      aEl.textContent = ep.episodeTitle || "(no title)";
-      const time = document.createElement("span"); time.className = "mono muted"; time.textContent = fmt(ep.ms || 0);
-      const when = document.createElement("span"); when.className = "mono muted"; when.textContent = shortDate(ep.ts || 0);
-      row.append(aEl, time, when);
-      ef.appendChild(row);
-    });
-    listEl.appendChild(ef);
-
-    // inner stats（セッション単位の分布）
-    const totalsBySession = {};
-    w.episodes.forEach(ep => {
-      const sid = ep.sessionId || "no-session";
-      totalsBySession[sid] = (totalsBySession[sid] || 0) + (ep.ms || 0);
-    });
-    const totalsArr = Object.values(totalsBySession);
-    const cards = document.getElementById("workInnerStats");
-    clear(cards);
-    const cf = frag();
-    [
-      { label: "作品内合計", value: fmt(w.totalMs) },
-      { label: "中央値（セッション）", value: fmt(median(totalsArr)) },
-      { label: "最小（セッション）", value: fmt(totalsArr.length ? Math.min(...totalsArr) : 0) },
-      { label: "最大（セッション）", value: fmt(totalsArr.length ? Math.max(...totalsArr) : 0) },
-    ].forEach(it => {
-      const card = document.createElement("div");
-      card.className = "card";
-      const title = document.createElement("div");
-      title.className = "title";
-      title.textContent = it.label;
-      const meta = document.createElement("div");
-      meta.className = "meta mono";
-      meta.textContent = it.value;
-      card.append(title, meta);
-      cf.appendChild(card);
-    });
-    cards.appendChild(cf);
-
-    switchView("work");
+  const grouped = groupByWork(lastDetails);
+  const w = grouped[workKey];
+  if (!w) { 
+    showToast("作品データが見つかりません", 1600, "error"); 
+    return; 
   }
+
+  const titleEl = document.getElementById("workPageTitle");
+  const metaEl = document.getElementById("workMeta");
+  if (titleEl) titleEl.textContent = w.workTitle || "(タイトルなし)";
+  if (metaEl) metaEl.textContent = `サイト: ${w.site} / 合計: ${fmt(w.totalMs)} / 最終: ${shortDate(w.latestTs)} / 件数: ${w.episodes.length}`;
+
+  // Quick Stats 更新処理を追加
+  const quickA = document.querySelector("#workInnerQuickA .value");
+  const quickB = document.querySelector("#workInnerQuickB .value");
+  if (quickA) {
+    // 今日の合計（当日の日付でフィルタ）
+    const todayKey = new Date().toISOString().slice(0,10); // "YYYY-MM-DD"
+    const todayTotal = w.episodes
+      .filter(ep => ep.day === todayKey)
+      .reduce((sum, ep) => sum + (ep.ms || 0), 0);
+    quickA.textContent = fmt(todayTotal);
+  }
+  if (quickB) {
+    quickB.textContent = fmt(w.totalMs);
+  }
+
+  // episodes (最新順)
+  const listEl = document.getElementById("workEpisodes");
+  clear(listEl);
+  const ef = frag();
+  w.episodes.sort((a, b) => b.ts - a.ts).forEach(ep => {
+    const row = document.createElement("div"); row.className = "episode";
+    const aEl = document.createElement("a");
+    aEl.href = ep.url || "#"; aEl.target = "_blank"; aEl.rel = "noopener";
+    aEl.textContent = ep.episodeTitle || "(no title)";
+    const time = document.createElement("span"); time.className = "mono muted"; time.textContent = fmt(ep.ms || 0);
+    const when = document.createElement("span"); when.className = "mono muted"; when.textContent = shortDate(ep.ts || 0);
+    row.append(aEl, time, when);
+    ef.appendChild(row);
+  });
+  listEl.appendChild(ef);
+
+  // 作品内統計（cards）
+  const totalsBySession = {};
+  w.episodes.forEach(ep => {
+    const sid = ep.sessionId || "no-session";
+    totalsBySession[sid] = (totalsBySession[sid] || 0) + (ep.ms || 0);
+  });
+  const totalsArr = Object.values(totalsBySession);
+  const cards = document.getElementById("workInnerStats");
+  clear(cards);
+  const cf = frag();
+  [
+    { label: "作品内合計", value: fmt(w.totalMs) },
+    { label: "中央値（セッション）", value: fmt(median(totalsArr)) },
+    { label: "最小（セッション）", value: fmt(totalsArr.length ? Math.min(...totalsArr) : 0) },
+    { label: "最大（セッション）", value: fmt(totalsArr.length ? Math.max(...totalsArr) : 0) },
+  ].forEach(it => {
+    const card = document.createElement("div");
+    card.className = "card";
+    const title = document.createElement("div");
+    title.className = "title";
+    title.textContent = it.label;
+    const meta = document.createElement("div");
+    meta.className = "meta mono";
+    meta.textContent = it.value;
+    card.append(title, meta);
+    cf.appendChild(card);
+  });
+  cards.appendChild(cf);
+
+  switchView("work");
+}
+
 
   // Site toggles（Settings）
   function renderToggles(cfg) {
@@ -672,6 +704,7 @@
 
   // Tables: mobile card labels injection（スマホカード型への橋渡し）
   function injectTableDataLabels() {
+    console.log("injectTableDataLabels called");
     const defs = {
       tableDaily: ["日付", "読書時間（h:mm:ss）"],
       tableDetails: ["日付", "サイト", "作品", "話数", "時間", "時刻", "セッション"],
@@ -709,9 +742,11 @@
   function load() {
     try {
       B?.runtime?.sendMessage({ type: "export-store" }, (resp) => {
+        console.log("export-store resp:", resp); // ←追加
         const snap = (resp && resp.ok && resp.snapshot) ? resp.snapshot : {};
         lastLogs = snap[KEY_LOG] || {};
         lastDetails = snap[KEY_DETAILS] || {};
+        console.log("lastLogs:", lastLogs, "lastDetails:", lastDetails); // ←追加
         renderAll();
       });
     } catch { }
@@ -776,6 +811,7 @@
   });
 
   // Toolbar navigation
+
   $$(".toolbar .tab").forEach(btn => {
     btn.addEventListener("click", () => switchView(btn.dataset.view));
   });
