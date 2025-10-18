@@ -447,21 +447,30 @@ function parsePixiv(u, rawTitle) {
         workTitle: title, episodeTitle: title, author: "", pixivId };
     }
   }
-  const only = cleanWhitespace(pre);
-  if (only) return { isContent: true, cert: "title", site, workTitle: only, episodeTitle: only, author: "", pixivId };
+  // 修正: rxSeries, rxStandalone, rxSingle にマッチしない場合、無条件で cert="url" に設定
+  // これにより、無効なタイトル（例: "[Pixiv]" やシンプルすぎるプレースホルダー）をカウント対象外にする
   return { isContent: true, cert: "url", site, workTitle: "", episodeTitle: "", author: "", pixivId };
 }
 
 /* Hameln */
-function parseHameln(u, title) {
+function parseHameln(u, title, doc) {
   const site = SITE.HAMELN;
   const path = u.pathname;
-  const trimmed = String(title || "").replace(/\s*-\s*ハーメルン$/i, "").trim();
 
   const isSerial = /^\/novel\/\d+\/\d+\.html$/i.test(path);
   const isTopOrShort = /^\/novel\/\d+\/?$/i.test(path);
 
-  const parts = String(trimmed || "").split(/\s+-\s+/).map(s => cleanWhitespace(s));
+  // 成人確認ページなどの除外
+  const isGenericTitle = /^ハーメルン\s*-\s*SS･小説投稿サイト-?$/i.test(String(title || "").trim());
+  const hasContent = doc && !!doc.querySelector("#novel_contents, #novel_honbun");
+
+  if (isGenericTitle || !hasContent) {
+    return { isContent: false, cert: "none", site, workTitle: "", episodeTitle: "", author: "" };
+  }
+
+  // ここから先は従来通り
+  const trimmed = String(title || "").replace(/\s*-\s*ハーメルン$/i, "").trim();
+  const parts = trimmed.split(/\s+-\s+/).map(s => cleanWhitespace(s));
 
   if (isSerial) {
     const work = cleanWhitespace(parts[0] || "");
@@ -482,6 +491,7 @@ function parseHameln(u, title) {
 
   return { isContent: false, cert: "none", site, workTitle: "", episodeTitle: "", author: "" };
 }
+
 
 /* Kakuyomu */
 function parseKakuyomu(u, title) {
