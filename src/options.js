@@ -591,14 +591,33 @@
     el.classList.add("highlight");
     setTimeout(() => el.classList.remove("highlight"), 2400);
   }
+  function updateWorkQuickStats(work) {
+  const quickA = document.querySelector("#workInnerQuickA .value");
+  const quickB = document.querySelector("#workInnerQuickB .value");
 
-  // Work page
-  function openWorkPage(workKey) {
+  if (!work || !Array.isArray(work.episodes)) return;
+
+  const todayKey = new Date().toISOString().slice(0, 10);
+
+  const todayTotal = work.episodes
+    .filter(ep => {
+      if (!ep.ts) return false;
+      const d = new Date(ep.ts);
+      const key = d.toISOString().slice(0, 10);
+      return key === todayKey;
+    })
+    .reduce((sum, ep) => sum + (ep.ms || 0), 0);
+
+  if (quickA) quickA.textContent = fmt(todayTotal);
+  if (quickB) quickB.textContent = fmt(work.totalMs);
+}
+
+function openWorkPage(workKey) {
   const grouped = groupByWork(lastDetails);
   const w = grouped[workKey];
-  if (!w) { 
-    showToast("作品データが見つかりません", 1600, "error"); 
-    return; 
+  if (!w) {
+    showToast("作品データが見つかりません", 1600, "error");
+    return;
   }
 
   const titleEl = document.getElementById("workPageTitle");
@@ -606,22 +625,10 @@
   if (titleEl) titleEl.textContent = w.workTitle || "(タイトルなし)";
   if (metaEl) metaEl.textContent = `サイト: ${w.site} / 合計: ${fmt(w.totalMs)} / 最終: ${shortDate(w.latestTs)} / 件数: ${w.episodes.length}`;
 
-  // Quick Stats 更新処理を追加
-  const quickA = document.querySelector("#workInnerQuickA .value");
-  const quickB = document.querySelector("#workInnerQuickB .value");
-  if (quickA) {
-    // 今日の合計（当日の日付でフィルタ）
-    const todayKey = new Date().toISOString().slice(0,10); // "YYYY-MM-DD"
-    const todayTotal = w.episodes
-      .filter(ep => ep.day === todayKey)
-      .reduce((sum, ep) => sum + (ep.ms || 0), 0);
-    quickA.textContent = fmt(todayTotal);
-  }
-  if (quickB) {
-    quickB.textContent = fmt(w.totalMs);
-  }
+  // ✅ 今日・累計の統計を更新
+  updateWorkQuickStats(w);
 
-  // episodes (最新順)
+  // エピソード一覧（最新順）
   const listEl = document.getElementById("workEpisodes");
   clear(listEl);
   const ef = frag();
@@ -637,7 +644,7 @@
   });
   listEl.appendChild(ef);
 
-  // 作品内統計（cards）
+  // 作品内統計（セッション単位）
   const totalsBySession = {};
   w.episodes.forEach(ep => {
     const sid = ep.sessionId || "no-session";
@@ -668,6 +675,7 @@
 
   switchView("work");
 }
+
 
 
   // Site toggles（Settings）

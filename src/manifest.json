@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
   "name": "ブックタイマー",
-  "version": "1.1.3",
-  "description": "対応小説サイトでの読書時間を自動計測し、日別・累計・作品別に集計。ポップアップや設定画面でリアルタイムに確認できます。",
+  "version": "1.1.7",
+  "description": "対応小説サイトでの読書時間を自動計測し、日別・累計・作品別に集計。",
   "permissions": [
     "storage",
     "tabs",
@@ -11,13 +11,13 @@
     "*://kakuyomu.jp/*",
     "*://syosetu.org/*",
     "*://syosetu.com/*",
+    "*://ncode.syosetu.com/*",
     "*://pixiv.net/*",
+    "*://www.pixiv.net/*",
     "https://api.syosetu.com/*"
   ],
   "background": {
-    "scripts": [
-      "background.js"
-    ]
+    "scripts": ["background.js"]
   },
   "content_scripts": [
     {
@@ -25,12 +25,10 @@
         "https://kakuyomu.jp/*",
         "https://ncode.syosetu.com/*",
         "https://syosetu.org/*",
-        "https://www.pixiv.net/novel/show.php*"
+        "https://www.pixiv.net/*"  
       ],
-      "js": [
-        "content.js"
-      ],
-      "run_at": "document_start"
+      "js": ["content.js"],
+      "run_at": "document_start"  
     }
   ],
   "browser_action": {
@@ -54,18 +52,8 @@
   },
   "browser_specific_settings": {
     "gecko": {
-      "id": "shin2222good@gmail.com",
-      "strict_min_version": "79.0",
-      "browser_specific_settings": {
-        "gecko": {
-          "id": "@book-timer",
-          "data_collection_permissions": {
-            "required": [
-              "none"
-            ]
-          }
-        }
-      }
+      "id": "shin2222oooo@gmail.com", 
+      "strict_min_version": "79.0"
     }
   }
 }
