@@ -100,7 +100,7 @@ const DEFAULT_SETTINGS = {
     "awaitCert.promote": true,
     "awaitCert.expire": true,
     "meta.apply": true,
-    "meta.apply.stale": false,
+    "meta.apply.stale": true, // enable to observe stale decisions
     "meta.parse.error": true,
     "title.stable": true,
     "title.promote.block": true,
@@ -260,7 +260,6 @@ function updateTitleStability(tabId, newTitle, now, site) {
     titleStableMap.set(tabId, s);
     return "";
   }
-  // タイトルが変わったら計測をリセット
   if (s.last !== t) s = { last: t, firstTs: now, stable: false };
 
   const needMs = titleStableMsFor(site);
@@ -268,27 +267,22 @@ function updateTitleStability(tabId, newTitle, now, site) {
   const isStableNow = span >= needMs;
 
   if (isStableNow && !s.stable) {
-    // 初めて安定に遷移
     s.stable = true;
     const st = tabState.get(tabId);
     if (!st || st.lastStableTitle !== t) {
       log("title.stable", { tabId, title: t, spanMs: span });
       titleStableMap.set(tabId, s);
-      // 遷移時のみ返す
       return t;
     }
   }
 
-  // 既に安定中：前回と同じタイトルなら何も返さない
   titleStableMap.set(tabId, s);
   const st = tabState.get(tabId);
   if (isStableNow && st && st.lastStableTitle !== t) {
-    // 安定中だがタイトルが変わった（滅多にないが想定）
     return t;
   }
   return "";
 }
-
 
 /* ===== Site enable cache ===== */
 const siteEnableCache = { value: null, ts: 0 };
@@ -304,7 +298,7 @@ async function isDomainEnabled(domain) {
 /* ===== Pending windows ===== */
 function schedulePendingDrop(tabId) {
   const st = tabState.get(tabId); if (!st?.pending) return;
-  // 実際のdropはevaluateVisibilityやglobal scan内で期限チェックにより行う
+  // actual drop happens via evaluateVisibility/global scan
 }
 function tryAbsorbPendingOnResume(st, now) {
   if (!st?.pending) return false;
@@ -312,7 +306,6 @@ function tryAbsorbPendingOnResume(st, now) {
   const base = Number(st.pending.stop ?? st.pending.queuedAt ?? now);
   const age = now - base;
 
-  // segment は最低 15 秒、その他は設定値
   const limit = (st.pending.kind === "segment")
     ? Math.max(SETTINGS.pendingAbsorbWindowMs, 15000)
     : SETTINGS.pendingAbsorbWindowMs;
@@ -329,7 +322,6 @@ function tryAbsorbPendingOnResume(st, now) {
     return false;
   }
 
-  // resume 時に初めて加算
   st.accumMs = (st.accumMs || 0) + st.pending.ms;
   log("pending.absorb", {
     tabId: st.tabId,
@@ -340,7 +332,6 @@ function tryAbsorbPendingOnResume(st, now) {
   st.pending = null;
   return true;
 }
-
 
 /* ===== Meta parse ===== */
 async function parseMeta(url, title) {
@@ -363,13 +354,18 @@ function metaSig(m) {
 }
 async function safeParseAndApply(tabId, url, title, now) {
   const st = tabState.get(tabId); if (!st) return;
-  const curUrl = st.urlObserved, curTitle = st.title;
+  const curUrl = st.urlObserved; // prefer observed URL for SPA consistency
+  const curTitle = st.title;
+
   try {
     const meta = await parseMeta(url, title);
-    if (url !== curUrl || title !== curTitle) {
+
+    // stale check: only require URL equality; title may differ while stabilizing
+    if (url !== curUrl) {
       if (SETTINGS.logTags["meta.apply.stale"]) log("meta.apply.stale",{ tabId, url, title });
       return;
     }
+
     const sig = metaSig(meta);
     const changed = (sig !== st._lastMetaSig);
     st.meta = meta;
@@ -380,7 +376,8 @@ async function safeParseAndApply(tabId, url, title, now) {
 }
 function metaMatchesUrl(st) {
   try {
-    const url = st.urlConfirmed || st.urlObserved || "";
+    // prefer latest observed URL to avoid mismatch during SPA transitions
+    const url = st.urlObserved || st.urlConfirmed || "";
     const dom = getDomain(url); const meta = st.meta || {};
     if (!dom || meta.site !== dom) return false;
     if (dom === SITE.PIXIV) {
@@ -467,7 +464,6 @@ function parseHameln(u, title) {
   const parts = String(trimmed || "").split(/\s+-\s+/).map(s => cleanWhitespace(s));
 
   if (isSerial) {
-    // 連載本文
     const work = cleanWhitespace(parts[0] || "");
     const ep = cleanWhitespace(parts[1] || "");
     const ok = !!(work && ep);
@@ -477,19 +473,15 @@ function parseHameln(u, title) {
   if (isTopOrShort) {
     const work = cleanWhitespace(parts[0] || "");
     const ep = cleanWhitespace(parts[1] || "");
-
     if (parts.length >= 2) {
-      // 短編本文（作品タイトル + サブタイトル）
       return { isContent: true, cert: "title", site, workTitle: work, episodeTitle: ep, author: "" };
     } else {
-      // トップページ（作品タイトルのみ）
       return { isContent: false, cert: work ? "title" : "none", site, workTitle: work, episodeTitle: "", author: "" };
     }
   }
 
   return { isContent: false, cert: "none", site, workTitle: "", episodeTitle: "", author: "" };
 }
-
 
 /* Kakuyomu */
 function parseKakuyomu(u, title) {
@@ -537,7 +529,7 @@ const narouApi = (() => {
           const res = await fetch(url, { method: "GET" });
           const json = await res.json();
           const info = Array.isArray(json) && json.length >= 2 ? json[1] : null;
-          cache.set(ncode, { info, ts: nowMs() }); resolve(info);
+          cache.set(ncode, { info, ts: nowMs() }); resolve(info)
         } catch { cache.set(ncode, { info: null, ts: nowMs() }); resolve(null); }
       }
     } finally { processing = false; }
@@ -593,11 +585,9 @@ function pauseReading(tabId, now, reason = "PAUSE") {
   clearIdleTimer(tabId);
 
   const add = inflightMs(st, now);
-  // st.accumMs += add; ← 削除
   st.reading = false;
   st.activeStartTs = undefined;
 
-  // IDLE_HOLD の場合は resumeGate を立てる
   st._stoppedForResumeGate = (reason === "IDLE_HOLD");
 
   if (st.meta?.isContent && st.meta?.cert === "title" && add > 0) {
@@ -626,8 +616,6 @@ function pauseReading(tabId, now, reason = "PAUSE") {
   tabState.set(tabId, st);
   log("reading.pause", { tabId, sessionId: st.sessionId, addMs: add, reason });
 }
-
-
 
 function clearIdleTimer(tabId) { const st = tabState.get(tabId); if (!st) return; if (st.idleTimer) { clearTimeout(st.idleTimer); st.idleTimer = undefined; tabState.set(tabId, st); } }
 function resetIdleTimer(tabId) {
@@ -705,7 +693,6 @@ async function commitDelta(st, deltaMs, now, reason = "FLUSH") {
 async function canStart(st, now) {
   if (!st) return false;
 
-  // ドメイン & 可視・安定判定
   const domain = getDomain(st.urlObserved || st.urlConfirmed);
   const stableOk = !!st.lastStableTitle;
   const visOk = !st.pageHidden && (
@@ -714,19 +701,15 @@ async function canStart(st, now) {
       : true
   );
 
-  // ドメイン有効（非同期）
   const enabled = domain ? await isDomainEnabled(domain) : false;
 
-  // 開始グレース
   const inStartGrace = st._graceUntil && now < st._graceUntil;
   const recentGap = now - (st.lastInteraction || 0);
   const canSkipGrace = recentGap <= SETTINGS.recentInteractionSkipStartGraceMs;
   const graceOk = !inStartGrace || canSkipGrace;
 
-  // IDLE_HOLD後の再開ゲート：ユーザ操作で解除されるまで不可
   const resumeGateOk = !st._stoppedForResumeGate;
 
-  // 総合判定
   return !!(
     enabled &&
     st.isCandidate &&
@@ -738,14 +721,12 @@ async function canStart(st, now) {
     resumeGateOk
   );
 }
-
 function canContinue(st, now) {
   if (!st.reading) return false;
   const visOk = !st.pageHidden;
   const recentGap = now - (st.lastInteraction || 0);
   return visOk && recentGap < SETTINGS.idleHoldMs;
 }
-
 
 async function startOrResumeReading(tabId, now) {
   const st = tabState.get(tabId); if (!st || st.reading) return;
@@ -757,32 +738,26 @@ async function startOrResumeReading(tabId, now) {
   st.sessionStartTs = st.sessionStartTs || now;
   st.activeStartTs = now;
   st.reading = true;
-  st.contentUrlAtStart = st.contentUrlAtStart || (st.urlConfirmed || st.urlObserved || "");
+  st.contentUrlAtStart = st.contentUrlAtStart || (st.urlObserved || st.urlConfirmed || "");
   st.committedMs = st.committedMs || 0;
 
-  // IDLE後のsegment吸収（shortは対象外）
   tryAbsorbPendingOnResume(st, now);
 
   st.lastFlushAt = now;
   st._idleResumeGraceUntil = now + SETTINGS.idleResumeGraceMs;
 
-  // 操作で再開した意図が分かるように、resumeゲートは解除済みの前提だが最後に安全側でfalse化
   st._stoppedForResumeGate = false;
-
-  // 再開直後はインタラクションを now で更新（idle誤検知抑制）
   st.lastInteraction = now;
 
   tabState.set(tabId, st);
   resetIdleTimer(tabId);
 
-  // ログ（昇格は共通だが、resumeフラグを添えて区別可能に）
   log("session.promote", {
     tabId, sessionId: st.sessionId, title: st.lastStableTitle, site: st.meta.site,
     resume: isResume === true
   });
   log("reading.start", { tabId, sessionId: st.sessionId, resume: isResume === true });
 }
-
 
 async function stopReading(tabId, now, reason = "STOP") {
   const st = tabState.get(tabId); if (!st?.sessionId) return;
@@ -801,7 +776,6 @@ async function stopReading(tabId, now, reason = "STOP") {
       await commitDelta(st, delta, now, reason);
       st.committedMs += delta;
     } else {
-      // 短すぎる: pending.shortで保持
       st.pending = {
         kind: "short", ms: delta, stop: now, expiresAt: now + SETTINGS.pendingShortTimeoutMs,
         site: st.meta.site, workTitle: st.meta.workTitle, episodeTitle: st.meta.episodeTitle, author: st.meta.author,
@@ -827,7 +801,6 @@ function promoteStableTitle(tabId, stableTitle, now) {
   const st = tabState.get(tabId); if (!st) return;
   const titleClean = cleanWhitespace(stableTitle || "");
 
-  // URLキー比較（hash差分は同一扱いで継続）
   const prev = st.contentUrlAtStart || st.urlConfirmed || st.urlObserved || "";
   const cur = st.urlObserved || "";
   const prevKey = normalizeUrlForCompare(prev);
@@ -838,16 +811,21 @@ function promoteStableTitle(tabId, stableTitle, now) {
     st.contentUrlAtStart = st.contentUrlAtStart || st.urlConfirmed;
   }
 
-  // metaとURLの整合性
+  // metaとURLの整合性（observed優先で評価）
   if (!metaMatchesUrl(st)) {
-    log("title.promote.block", { tabId, reason: "metaUrlMismatch" });
+    try {
+      const u = new URL(st.urlObserved || "");
+      const urlId = u.searchParams.get("id");
+      const metaId = st.meta?.pixivId;
+      log("title.promote.block", { tabId, reason: "metaUrlMismatch", urlObserved: st.urlObserved, urlConfirmed: st.urlConfirmed, urlId, metaId });
+    } catch {
+      log("title.promote.block", { tabId, reason: "metaUrlMismatch" });
+    }
     return;
   }
 
-  // 既に同一タイトル・同一ページキーでreading中なら何もしない
   if (st.reading && st.lastStableTitle === titleClean && prevKey === curKey) return;
 
-  // ここで初めてデバウンスを適用
   const debounceMs = st.meta?.site === SITE.PIXIV ? 200 : SETTINGS.promoteDebounceMs;
   const lastAttempt = st._promoteTitleDebounce.get(titleClean) || 0;
   if (now - lastAttempt < debounceMs) {
@@ -856,7 +834,7 @@ function promoteStableTitle(tabId, stableTitle, now) {
   }
   st._promoteTitleDebounce.set(titleClean, now);
 
-  // タイトルとURL確定
+  // タイトルとURL確定（SPA整合のため観測URLを確定へ反映）
   st.lastStableTitle = titleClean;
   st.urlConfirmed = st.urlObserved || st.urlConfirmed;
   tabState.set(tabId, st);
@@ -883,9 +861,7 @@ async function onUrlOrTitleChange(tabId, newUrl, newTitle) {
     if (urlChanged) {
       const fragmentOnlyEq = isSamePageIgnoringFragment(prevUrl, newUrl);
       if (!fragmentOnlyEq) {
-        // ハードナビゲーション: セッション終了
         await stopReading(tabId, now, "NAVIGATION");
-        // 初期化
         titleStableMap.set(tabId, { last: "", firstTs: now, stable: false });
         st.lastStableTitle = "";
         st._promoteTitleDebounce = new Map();
@@ -939,7 +915,6 @@ async function evaluateVisibility(tabId, now) {
     }
   }
 }
-
 
 /* ===== Polling core ===== */
 let globalScanTimer = null;
@@ -1132,79 +1107,71 @@ B.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   const type = String(msg.type || "");
 
   switch (type) {
-// heartbeat の該当部分のみ完全記述
-case "heartbeat": {
-  (async () => {
-    const tabId = await resolveTabId(msg, sender);
-    if (!tabId) return;
-    withTabQueue(tabId, async () => {
-      const st = await ensureStateFromTab(tabId);
-      const nowLocal = nowMs();
-      const wasHidden = st.pageHidden;
-      st.pageHidden = (msg.visibilityState === "hidden");
-      st.lastVisibilityMsgAt = nowLocal;
+    case "heartbeat": {
+      (async () => {
+        const tabId = await resolveTabId(msg, sender);
+        if (!tabId) return;
+        withTabQueue(tabId, async () => {
+          const st = await ensureStateFromTab(tabId);
+          const nowLocal = nowMs();
+          const wasHidden = st.pageHidden;
+          st.pageHidden = (msg.visibilityState === "hidden");
+          st.lastVisibilityMsgAt = nowLocal;
 
-      if (wasHidden !== st.pageHidden) {
-        if (!st.pageHidden) {
-          st.becameVisibleAt = nowLocal;
-          log("visible.transition", { tabId, atMs: nowLocal });
-        } else {
-          pauseReading(tabId, nowLocal, "NOT_VISIBLE");
-        }
-      }
+          if (wasHidden !== st.pageHidden) {
+            if (!st.pageHidden) {
+              st.becameVisibleAt = nowLocal;
+              log("visible.transition", { tabId, atMs: nowLocal });
+            } else {
+              pauseReading(tabId, nowLocal, "NOT_VISIBLE");
+            }
+          }
 
-      if (typeof msg.lastInteraction === "number") {
-        const li = toEpochMs(msg.lastInteraction, nowLocal);
-        if (li > (st.lastInteraction || 0)) {
-          st.lastInteraction = li;
+          if (typeof msg.lastInteraction === "number") {
+            const li = toEpochMs(msg.lastInteraction, nowLocal);
+            if (li > (st.lastInteraction || 0)) {
+              st.lastInteraction = li;
+              if (st._stoppedForResumeGate) st._stoppedForResumeGate = false;
+              log("interaction", { tabId, evType: "heartbeat-update", ts: li, site: st.meta?.site, reading: st.reading });
+              if (st.reading) resetIdleTimer(tabId);
+            }
+          }
 
-          // 操作が発生したので再開ゲート解除
+          st.isCandidate = isCandidateUrl(st.urlObserved);
+          tabState.set(tabId, st);
+
+          await pollTab(tabId, st.urlObserved, st.title || "");
+        });
+      })();
+      return false;
+    }
+
+    case "scroll-activity": {
+      (async () => {
+        const tabId = await resolveTabId(msg, sender);
+        if (!tabId) return;
+        withTabQueue(tabId, async () => {
+          const st = await ensureStateFromTab(tabId);
+          const nowLocal = nowMs();
+
+          let ts = nowLocal;
+          if (typeof msg.ts === "number") ts = toEpochMs(msg.ts, nowLocal);
+          st.lastInteraction = ts;
+
           if (st._stoppedForResumeGate) st._stoppedForResumeGate = false;
 
-          log("interaction", { tabId, evType: "heartbeat-update", ts: li, site: st.meta?.site, reading: st.reading });
+          tabState.set(tabId, st);
           if (st.reading) resetIdleTimer(tabId);
-        }
-      }
 
-      st.isCandidate = isCandidateUrl(st.urlObserved);
-      tabState.set(tabId, st);
+          log("interaction", { tabId, evType: msg.evType || "scroll", ts, site: st.meta?.site, reading: st.reading });
 
-      await pollTab(tabId, st.urlObserved, st.title || "");
-    });
-  })();
-  return false;
-}
+          await pollTab(tabId, st.urlObserved, st.title || "");
+        });
+      })();
+      return true;
+    }
 
-
-// scroll-activity 完全記述
-case "scroll-activity": {
-  (async () => {
-    const tabId = await resolveTabId(msg, sender);
-    if (!tabId) return;
-    withTabQueue(tabId, async () => {
-      const st = await ensureStateFromTab(tabId);
-      const nowLocal = nowMs();
-
-      let ts = nowLocal;
-      if (typeof msg.ts === "number") ts = toEpochMs(msg.ts, nowLocal);
-      st.lastInteraction = ts;
-
-      // 操作が発生したので再開ゲート解除
-      if (st._stoppedForResumeGate) st._stoppedForResumeGate = false;
-
-      tabState.set(tabId, st);
-      if (st.reading) resetIdleTimer(tabId);
-
-      log("interaction", { tabId, evType: msg.evType || "scroll", ts, site: st.meta?.site, reading: st.reading });
-
-      await pollTab(tabId, st.urlObserved, st.title || "");
-    });
-  })();
-  return true;
-}
-
-
-    case "spa-url-change": { return false; } // content.jsは送らない前提なので無視
+    case "spa-url-change": { return false; }
 
     case "get-stats": { getLiveFinal().then(payload => { try { sendResponse(payload); } catch {} }); return true; }
     case "get-telemetry": { try { sendResponse({ telemetry }); } catch {} return true; }
@@ -1342,4 +1309,3 @@ function withTabQueue(tabId, fn) {
   tabQueues.set(tabId, next);
   return next;
 }
-
