@@ -1,31 +1,45 @@
 "use strict";
-/*
-  Firefox向け 純CSS/JS/HTML 版（現行の HTML/CSS 構造に完全対応）
-  - innerHTML を使わず、createElement/appendChild のみ
-  - 棒グラフは transform(scaleX)（ARIA付き）
-  - モバイル時はテーブルをカード型に自動変換（data-label をJSで注入）
-  - 作品ページは PC:横並び / スマホ:縦並び（既存HTMLの .work-summary/.work-header に準拠）
-*/
+/**
+ * options.js — ブックタイマー（拡張オプション UI）
+ * 方針:
+ * - UI/UX: 軽快・最小構造・視認性重視。ユーザーが「いま」を把握できる。
+ * - グラフ: 横軸は固定（0..10, 現在=10）。縦軸は最大値+2分を基準に狭く、ホイール/ピンチで上下のみ拡縮。
+ * - 役割分離: データ→整形→描画、UI→イベント→レンダリング。過剰な再描画や重複リスナーを抑制。
+ * 依存:
+ * - Firefox: window.browser / Chrome: window.chrome
+ */
 
+/* =========================================================
+   Globals / Bridge
+========================================================= */
 (() => {
   const B = (window.browser || window.chrome);
 
-  // Keys
-  const KEY_LOG = "rt_daily_log";
-  const KEY_DETAILS = "rt_details";
-  const THEME_KEY = "rt_theme";
+  // Storage keys（拡張側と一致）
+  const KEY_LOG = "rt_daily_log";       // { "YYYY-MM-DD": ms, ... }
+  const KEY_DETAILS = "rt_details";     // { "YYYY-MM-DD": [ { site, workTitle, episodeTitle, url, ms, ts, sessionId }, ... ], ... }
+  const THEME_KEY = "rt_theme";         // "system" | "light" | "dark"
 
   // State
-  let lastDetails = {};
-  let lastLogs = {};
-  let lastSiteEnable = {};
   let lastLive = { total: 0, daily: 0 };
+  let lastLogs = {};
+  let lastDetails = {};
+  let lastSiteEnable = {};
 
-  // Utils
+  // Render cache
+  const renderCache = {
+    live: "",
+    logs: "",
+    details: "",
+  };
+
+  /* =========================================================
+     Utilities
+  ========================================================= */
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
-  const frag = () => document.createDocumentFragment();
   const clear = (el) => { if (el) el.textContent = ""; };
+  const frag = () => document.createDocumentFragment();
   const pad2 = (n) => String(n).padStart(2, "0");
 
   function fmt(ms) {
@@ -35,88 +49,129 @@
     const sec = s % 60;
     return `${h}:${pad2(m)}:${pad2(sec)}`;
   }
-  function shortId(id, n = 8) { return String(id || "").slice(0, n); }
-  function median(arr) {
-    if (!arr || !arr.length) return 0;
-    const a = [...arr].sort((x, y) => x - y);
-    const n = a.length;
-    if (n % 2 === 1) return a[(n - 1) / 2];
-    return Math.round((a[n / 2 - 1] + a[n / 2]) / 2);
+  function formatShort(ms) {
+    // 軽快表示: h>0 => hhm, else mm:ss
+    const s = Math.max(0, Math.floor((ms || 0) / 1000));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    if (h > 0) return `${h}h${m}`;
+    return `${m}:${pad2(sec)}`;
   }
-  function percentile(arr, p) {
-    if (!arr || !arr.length) return 0;
-    const a = [...arr].sort((x, y) => x - y);
-    const idx = (a.length - 1) * p;
-    const lo = Math.floor(idx), hi = Math.ceil(idx);
-    if (lo === hi) return a[lo];
-    const w = idx - lo;
-    return Math.round(a[lo] * (1 - w) + a[hi] * w);
+  function formatReadable(ms) {
+    const s = Math.max(0, Math.floor((ms || 0) / 1000));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    if (h > 0) return `${h}時間${m}分`;
+    return `${m}分${sec}秒`;
   }
   function shortDate(ts) {
     if (!ts) return "-";
     const d = new Date(ts);
-    const mm = pad2(d.getMonth() + 1);
-    const dd = pad2(d.getDate());
-    const hh = pad2(d.getHours());
-    const mi = pad2(d.getMinutes());
-    return `${mm}/${dd} ${hh}:${mi}`;
+    return `${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
   }
+  function median(arr) {
+    if (!arr || !arr.length) return 0;
+    const a = [...arr].sort((x, y) => x - y);
+    const n = a.length;
+    return n % 2 ? a[(n - 1) / 2] : Math.round((a[n / 2 - 1] + a[n / 2]) / 2);
+  }
+  function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
 
-  // Toast（バリアント対応）
+  // Toast
   function showToast(msg, ms = 1600, type) {
     const t = $("#toast");
     if (!t) return;
     t.textContent = msg;
-    t.className = `toast show${type ? ' ' + type : ''}`;
-    window.clearTimeout(showToast._timer);
-    showToast._timer = window.setTimeout(() => t.classList.remove("show"), ms);
+    t.className = `toast show${type ? " " + type : ""}`;
+    clearTimeout(showToast._timer);
+    showToast._timer = setTimeout(() => t.classList.remove("show"), ms);
   }
 
-  // Theme
+  // Tooltip（Canvas 用 DOM オーバレイ）
+  function createTooltip(container) {
+    let el = container.querySelector(".chart-tooltip");
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "chart-tooltip mono";
+      Object.assign(el.style, {
+        position: "fixed",
+        zIndex: 80,
+        pointerEvents: "none",
+        background: "var(--surface)",
+        border: "1px solid var(--border)",
+        borderRadius: "8px",
+        boxShadow: "var(--shadow-2)",
+        padding: "6px 8px",
+        fontSize: "13px",
+        whiteSpace: "pre",
+        display: "none",
+      });
+      document.body.appendChild(el);
+    }
+    return {
+      show(text, x, y) {
+        el.textContent = text;
+        el.style.left = `${x + 10}px`;
+        el.style.top = `${y + 10}px`;
+        el.style.display = "block";
+      },
+      hide() { el.style.display = "none"; }
+    };
+  }
+
+  /* =========================================================
+     Theme
+  ========================================================= */
   function applyTheme(theme) {
     const root = document.documentElement;
     const value = theme || localStorage.getItem(THEME_KEY) || "system";
     root.setAttribute("data-theme", value);
-    const el = document.querySelector(`.segmented input[value="${value}"]`);
-    if (el) el.checked = true;
+    // UI state
+    const input = document.querySelector(`.segmented input[value="${value}"]`);
+    if (input) input.checked = true;
   }
   function bindTheme() {
     document.querySelectorAll(".segmented input[name='theme']").forEach(r => {
       r.addEventListener("change", () => {
         localStorage.setItem(THEME_KEY, r.value);
         applyTheme(r.value);
-        const labelText = r.labels?.[0]?.textContent ?? r.value;
+        const labelText = r.labels?.[0]?.textContent || r.value;
         showToast(`テーマを ${labelText} に変更しました`, 1600, "success");
       });
     });
     applyTheme();
   }
 
-  // Tabs / Views
+  /* =========================================================
+     Tabs / Views
+  ========================================================= */
   function switchView(view) {
-    const tabs = $$(".toolbar .tab");
-    tabs.forEach(b => {
-      const is = b.dataset.view === view;
-      b.classList.toggle("active", is);
-      b.setAttribute("aria-selected", String(is));
-      if (is) b.focus({ preventScroll: true });
+    const isWorkPage = view === "work";
+    const activeTabKey = isWorkPage ? "library" : view;
+    $$(".toolbar .tab").forEach(btn => {
+      const active = btn.dataset.view === activeTabKey;
+      btn.classList.toggle("active", active);
+      btn.setAttribute("aria-selected", String(active));
+      if (active && !isWorkPage) btn.focus({ preventScroll: true });
     });
-
     $$(".view").forEach(v => v.classList.add("hidden"));
     const target = document.getElementById(`view-${view}`);
     if (target) target.classList.remove("hidden");
     try {
-      const map = { home: "ホーム", library: "ライブラリ", work: "作品ページ", log: "ログ", stats: "統計", settings: "設定" };
-      const suffix = map[view] || "";
-      document.title = suffix ? `ブックタイマー — ${suffix}` : "ブックタイマー";
-    } catch { }
+      const titles = { home: "ホーム", library: "ライブラリ", work: "作品ページ", settings: "設定" };
+      document.title = `ブックタイマー — ${titles[view] || ""}`;
+    } catch {}
   }
-  function bindTabKeyboard() {
+  function bindTabs() {
+    $$(".toolbar .tab").forEach(btn => {
+      btn.addEventListener("click", () => switchView(btn.dataset.view));
+    });
+    const toolbar = $(".toolbar");
     const tabs = $$(".toolbar .tab");
     const order = tabs.map(t => t.dataset.view);
-    const toolbar = $(".toolbar");
-    if (!toolbar) return;
-    toolbar.addEventListener("keydown", (e) => {
+    toolbar?.addEventListener("keydown", (e) => {
       if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
       e.preventDefault();
       const current = tabs.findIndex(t => t.getAttribute("aria-selected") === "true");
@@ -129,329 +184,677 @@
     });
   }
 
-  // Home: Live totals
-  function renderLive(live) {
-    const tEl = $("#liveTotal");
-    const dEl = $("#liveToday");
-    if (tEl) tEl.textContent = fmt((live && live.total) || 0);
-    if (dEl) dEl.textContent = fmt((live && live.daily) || 0);
-  }
+  /* =========================================================
+     Home: Summary
+  ========================================================= */
+  function renderHomeSummary(live, logs) {
+    const key = JSON.stringify(live);
+    if (key === renderCache.live) return;
+    renderCache.live = key;
 
-  // Home: Recent works
-  function renderRecentWorks(details) {
-    const container = document.getElementById("recentWorks");
-    if (!container) return;
-    clear(container);
-
-    const rows = [];
-    Object.entries(details).forEach(([day, list]) => (list || []).forEach(r => rows.push({ day, ...r })));
-    rows.sort((a, b) => (b.ts || 0) - (a.ts || 0));
-
-    const byWorkTitle = new Map();
-    for (const r of rows) {
-      const k = `${r.site}|${r.workTitle}`;
-      if (!byWorkTitle.has(k)) byWorkTitle.set(k, r);
-    }
-
-    const f = frag();
-    const items = Array.from(byWorkTitle.values()).slice(0, 8);
-    if (!items.length) {
-      const card = document.createElement("div");
-      card.className = "card";
-      const title = document.createElement("div");
-      title.className = "title";
-      const text = document.createElement("span");
-      text.className = "text truncate-2";
-      text.textContent = "まだ記録がありません";
-      title.appendChild(text);
-      card.appendChild(title);
-      f.appendChild(card);
-    } else {
-      items.forEach(r => {
-        const card = document.createElement("div");
-        card.className = "card";
-        card.dataset.workKey = `${r.site}|${r.workTitle}`;
-
-        const title = document.createElement("div");
-        title.className = "title";
-        const text = document.createElement("span");
-        text.className = "text truncate-2";
-        text.textContent = `[${r.site}] ${r.workTitle || "(no title)"}`;
-        title.appendChild(text);
-
-        const meta = document.createElement("div");
-        meta.className = "meta";
-        meta.textContent = `最終更新: ${r.ts ? shortDate(r.ts) : "-"}`;
-
-        const actions = document.createElement("div");
-        actions.className = "actions";
-
-        const btnLibrary = document.createElement("button");
-        btnLibrary.className = "open-work";
-        btnLibrary.textContent = "ライブラリで表示";
-        btnLibrary.addEventListener("click", (e) => {
-          e.stopPropagation();
-          switchView("library");
-          setTimeout(() => highlightWork(card.dataset.workKey), 10);
-        });
-
-        const btnOpen = document.createElement("button");
-        btnOpen.className = "open-work";
-        btnOpen.textContent = "作品ページへ";
-        btnOpen.addEventListener("click", (e) => {
-          e.stopPropagation();
-          openWorkPage(card.dataset.workKey);
-        });
-
-        actions.append(btnLibrary, btnOpen);
-        card.append(title, meta, actions);
-        card.addEventListener("click", () => openWorkPage(card.dataset.workKey));
-        f.appendChild(card);
-      });
-    }
-    container.appendChild(f);
-  }
-
-  // Home: Month summary
-  function renderMonthSummary(logs) {
-    const container = document.getElementById("monthSummary");
-    if (!container) return;
-    clear(container);
+    $("#liveTotal") && ($("#liveTotal").textContent = fmt(live?.total || 0));
+    $("#liveToday") && ($("#liveToday").textContent = fmt(live?.daily || 0));
 
     const now = new Date();
     const ym = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}`;
-    const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    const pYm = `${prev.getFullYear()}-${pad2(prev.getMonth() + 1)}`;
-    let totalMonth = 0, days = 0;
-    let totalPrev = 0, pDays = 0;
+    let totalMonthMs = 0, dayCount = 0;
     Object.entries(logs).forEach(([day, ms]) => {
-      if (day.startsWith(ym)) { totalMonth += (ms || 0); days++; }
-      if (day.startsWith(pYm)) { totalPrev += (ms || 0); pDays++; }
+      if (day.startsWith(ym)) {
+        totalMonthMs += (ms || 0);
+        if (ms > 0) dayCount++;
+      }
     });
-    const avg = days ? Math.round(totalMonth / days) : 0;
-    const prevAvg = pDays ? Math.round(totalPrev / pDays) : 0;
-    const diff = avg - prevAvg;
+    const avgMonthMs = dayCount ? (totalMonthMs / dayCount) : 0;
+    $("#liveMonthTotal") && ($("#liveMonthTotal").textContent = fmt(totalMonthMs));
+    $("#liveMonthAvg") && ($("#liveMonthAvg").textContent = fmt(avgMonthMs));
+  }
 
-    const items = [
-      { label: "今月合計", value: fmt(totalMonth) },
-      { label: "日平均", value: fmt(avg) },
-      { label: "対象日数", value: `${days}日` },
-      { label: "前月比（平均差）", value: `${diff >= 0 ? "+" : ""}${fmt(diff)}` }
-    ];
+  /* =========================================================
+     Home: Recent works
+  ========================================================= */
+  function renderRecentWorks(details) {
+    const key = JSON.stringify(details);
+    if (key === renderCache.details) return;
+    renderCache.details = key;
+
+    const container = $("#recentWorks");
+    if (!container) return;
+    clear(container);
+
+    const rows = [];
+    Object.entries(details).forEach(([day, list]) => (list || []).forEach(r => rows.push({ day, ...r })));
+    rows.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+
+    const pick = new Map();
+    for (const r of rows) {
+      const k = `${r.site}|${r.workTitle}`;
+      if (!pick.has(k)) pick.set(k, r);
+    }
+    const items = Array.from(pick.values()).slice(0, 8);
+
+    if (!items.length) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "まだ記録がありません";
+      container.appendChild(empty);
+      return;
+    }
 
     const f = frag();
-    items.forEach(it => {
+    items.forEach(r => {
       const card = document.createElement("div");
       card.className = "card";
+      card.dataset.workKey = `${r.site}|${r.workTitle}`;
+      card.setAttribute("role", "button");
+      card.setAttribute("tabindex", "0");
+
       const title = document.createElement("div");
       title.className = "title";
-      title.textContent = it.label;
+      const text = document.createElement("span");
+      text.className = "text truncate-1";
+      text.textContent = `[${r.site}] ${r.workTitle || "(no title)"}`;
+      title.appendChild(text);
+
       const meta = document.createElement("div");
-      meta.className = "meta mono";
-      meta.textContent = it.value;
-      card.append(title, meta);
+      meta.className = "meta";
+      meta.textContent = `最終更新: ${r.ts ? shortDate(r.ts) : "-"}`;
+
+      const actions = document.createElement("div");
+      actions.className = "actions";
+      const btnOpen = document.createElement("button");
+      btnOpen.className = "small";
+      btnOpen.textContent = "作品ページへ";
+      btnOpen.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openWorkPage(card.dataset.workKey);
+      });
+      actions.append(btnOpen);
+
+      card.append(title, meta, actions);
+      card.addEventListener("click", (e) => {
+        if (e.target.tagName === "BUTTON") return;
+        openWorkPage(card.dataset.workKey);
+      });
+      card.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") openWorkPage(card.dataset.workKey);
+      });
+
       f.appendChild(card);
     });
     container.appendChild(f);
   }
 
-  // Log: daily table + bars
-  function renderDaily(logs) {
-    // Table
-    const tbody = $("#tableDaily tbody");
-    if (tbody) {
-      clear(tbody);
-      const f = frag();
-      Object.entries(logs).sort(([a], [b]) => a.localeCompare(b)).forEach(([day, ms]) => {
-        const tr = document.createElement("tr");
-        const tdDay = document.createElement("td"); tdDay.textContent = day;
-        const tdMs = document.createElement("td"); tdMs.className = "mono"; tdMs.textContent = fmt(ms || 0);
-        tr.append(tdDay, tdMs);
-        f.appendChild(tr);
-      });
-      tbody.appendChild(f);
-    }
+/**
+ * 月次トレンドグラフ（縦軸は「最大値（baseTop）」をスケールで可変）
+ * - キャンバス自体は固定（DPRのみ適用）。スクロールで要素全体が拡大しない
+ * - wheel/pinch で yScaleFactor を更新 → topMax を再計算 → 軸ラベルとデータが連動
+ * - 欠損は 0 として線で結ぶ（連続）。点は非ゼロのみ。今日を軽く強調
+ * - 空データ時はフォールバック（DOM）を重複なく表示
+ */
+/**
+ * 月次トレンドグラフ一式（縦軸は最大値を可変、PC/スマホの操作に自然対応）
+ * - 要素を拡大しない：キャンバスは常に固定サイズ（DPRのみ）。ズームは「縦軸最大値 topMax」の変更で表現
+ * - 操作は統一された Pointer/Touch/Wheel：
+ *   - Wheel（PC）/ Pinch（スマホ2本指）で縦軸ズーム
+ *   - Drag（1本指/左ドラッグ）で縦軸ズーム（指数スケールで滑らか）
+ *   - Tap/Click で最寄り点のツールチップ表示、Long-press で固定表示
+ * - 欠損は 0 として連続線、点は非ゼロのみ。今日を軽く強調
+ * - 空データ時はフォールバックを重複なく表示
+ */
+function renderMonthTrendGraph(logs) {
+  const container = $("#monthTrendChart");
+  if (!container) return;
 
-    // Bars（相対 + 上限付き ＝ 極端値の影響を抑制）
-    const bars = $("#dailyBars");
-    if (bars) {
-      clear(bars);
-      const days = Object.entries(logs).sort(([a], [b]) => a.localeCompare(b));
-      const recent = days.slice(-30);
-      const values = recent.map(([, v]) => v || 0);
-      const capMax = Math.max(1, values.length >= 5 ? percentile(values, 0.95) : Math.max(1, ...values));
-      const bf = frag();
-      recent.forEach(([day, ms]) => {
-        const wrap = document.createElement("div"); wrap.className = "bar";
-        const label = document.createElement("div"); label.className = "label"; label.textContent = day.slice(5);
+  if (!container._graph) {
+    const canvas = document.createElement("canvas");
+    canvas.style.display = "block";
+    canvas.style.position = "relative";
+    container.appendChild(canvas);
 
-        const gauge = document.createElement("div"); gauge.className = "gauge";
-        gauge.setAttribute("role", "progressbar");
-        gauge.setAttribute("aria-valuemin", "0");
-        gauge.setAttribute("aria-valuemax", String(capMax));
-        const nowVal = Math.min(ms || 0, capMax);
-        gauge.setAttribute("aria-valuenow", String(nowVal));
+    container._graph = {
+      cacheKey: "",
+      canvas,
+      ctx: null,
+      lastSize: { w: 0, h: 0, dpr: 1 },
 
-        const fill = document.createElement("div"); fill.className = "fill";
-        gauge.appendChild(fill);
-        const ratio = Math.max(0, Math.min(1, (nowVal / capMax)));
-        requestAnimationFrame(() => { fill.style.transform = `scaleX(${ratio})`; });
+      // Interaction state
+      yScaleFactor: 1, // baseTop に乗算される縦軸スケール
+      isMobile: window.innerWidth <= 599,
+      gesture: { touching: false, lastDistY: 0 },
+      tooltip: createTooltip(container),
+      suppressTooltip: false,
+      lastHoverTs: 0,
+      hoverThrottleMs: 60,
+      tipLocked: false, // 長押しで固定されたか
 
-        const value = document.createElement("div"); value.className = "value mono"; value.textContent = fmt(ms || 0);
-        wrap.append(label, gauge, value);
-        bf.appendChild(wrap);
-      });
-      bars.appendChild(bf);
-    }
+      // Data
+      data: [],
+      today: 0,
+      baseTop: 0, // 最大値+バッファ（最低10分）
+    };
 
-    injectTableDataLabels();
-  }
+    const g = container._graph;
 
-  // Details (作品別詳細テーブル)
-  function renderDetails(details) {
-    const tbody = $("#tableDetails tbody");
-    if (!tbody) return;
-    clear(tbody);
-    const rows = [];
-    Object.entries(details).forEach(([day, list]) => (list || []).forEach(r => rows.push({ day, ...r })));
-    rows.sort((a, b) => (b.ts || 0) - (a.ts || 0));
-    const f = frag();
-    rows.forEach(r => {
-      const tr = document.createElement("tr");
-      const tdDay = document.createElement("td"); tdDay.textContent = r.day || "";
-      const tdSite = document.createElement("td"); tdSite.textContent = r.site || "";
-      const tdWork = document.createElement("td"); tdWork.className = "mono"; tdWork.textContent = r.workTitle || "";
-      const tdEp = document.createElement("td"); tdEp.className = "mono"; tdEp.textContent = r.episodeTitle || "";
-      const tdMs = document.createElement("td"); tdMs.className = "mono"; tdMs.textContent = fmt(r.ms || 0);
-      const tdTs = document.createElement("td"); tdTs.textContent = shortDate(r.ts || 0);
-      const tdSess = document.createElement("td"); tdSess.className = "mono"; tdSess.textContent = shortId(r.sessionId || "no-session");
-      tr.append(tdDay, tdSite, tdWork, tdEp, tdMs, tdTs, tdSess);
-      f.appendChild(tr);
-    });
-    tbody.appendChild(f);
-    injectTableDataLabels();
-  }
+    // Wheel: 縦軸ズーム（要素拡大はしない）
+    container.addEventListener(
+      "wheel",
+      (e) => {
+        e.preventDefault();
+        if (g.tipLocked) g.tipLocked = false;
+        const factor = e.deltaY > 0 ? 1.1 : 0.9;
+        g.yScaleFactor = clamp(g.yScaleFactor * factor, 0.2, 5);
+        drawMonthTrend(container, g);
+      },
+      { passive: false }
+    );
 
-  // Aggregates: work totals
-  function renderWorkAggregates(details) {
-    const workTbody = $("#tableAggWork tbody");
-    if (!workTbody) return;
-    clear(workTbody);
-    const byWork = {};
-    Object.values(details).forEach(list => {
-      (list || []).forEach(r => {
-        const k = `${r.site}|${r.workTitle || ""}`;
-        byWork[k] = (byWork[k] || 0) + (r.ms || 0);
-      });
-    });
-    const f = frag();
-    Object.entries(byWork)
-      .map(([k, ms]) => {
-        const [site, workTitle] = k.split("|");
-        return { site, workTitle, ms };
-      })
-      .sort((a, b) => b.ms - a.ms)
-      .forEach(row => {
-        const tr = document.createElement("tr");
-        const tdSite = document.createElement("td"); tdSite.textContent = row.site;
-        const tdWork = document.createElement("td"); tdWork.className = "mono"; tdWork.textContent = row.workTitle || "";
-        const tdMs = document.createElement("td"); tdMs.className = "mono"; tdMs.textContent = fmt(row.ms);
-        tr.append(tdSite, tdWork, tdMs);
-        f.appendChild(tr);
-      });
-    workTbody.appendChild(f);
-    injectTableDataLabels();
-  }
+    // Pinch（2本指）: 縦距離ベースでズーム
+    container.addEventListener(
+      "touchstart",
+      (e) => {
+        g.gesture.touching = true;
+        g.suppressTooltip = true;
+        if (e.touches.length === 2) {
+          g.gesture.lastDistY = Math.abs(e.touches[0].clientY - e.touches[1].clientY);
+        }
+        // long-press 予約
+        if (e.touches.length === 1) {
+          const t = e.touches[0];
+          g._lpTmr = window.setTimeout(() => {
+            const hit = findNearestPoint(g, t.clientX, t.clientY);
+            if (hit) {
+              g.tipLocked = true;
+              g.tooltip.show(`${hit.day}日\n${formatShort(hit.ms)}`, t.clientX, t.clientY);
+            }
+          }, 500);
+        }
+      },
+      { passive: true }
+    );
+    container.addEventListener(
+      "touchmove",
+      (e) => {
+        if (!g.gesture.touching) return;
+        if (e.touches.length === 2) {
+          const distY = Math.abs(e.touches[0].clientY - e.touches[1].clientY);
+          const factor = distY / (g.gesture.lastDistY || distY);
+          g.gesture.lastDistY = distY;
+          g.yScaleFactor = clamp(g.yScaleFactor * factor, 0.2, 5);
+          drawMonthTrend(container, g);
+        }
+      },
+      { passive: true }
+    );
+    container.addEventListener(
+      "touchend",
+      (e) => {
+        g.gesture.touching = false;
+        window.clearTimeout(g._lpTmr);
+        g._lpTmr = null;
+        setTimeout(() => {
+          g.suppressTooltip = false;
+        }, 80);
+        g.gesture.lastDistY = 0;
 
-  // Aggregates: episode sessions
-  function renderAggregates(details) {
-    const epTbody = $("#tableAggEpisode tbody");
-    if (!epTbody) return;
-    clear(epTbody);
-    const bySessionTotal = {};
-    const labelByEpisode = {};
-    Object.values(details).forEach(list => {
-      (list || []).forEach(r => {
-        const epKey = `${r.site}|${r.workTitle}|${r.episodeTitle}`;
-        labelByEpisode[epKey] = labelByEpisode[epKey] || {
-          site: r.site || "",
-          workTitle: r.workTitle || "",
-          episodeTitle: r.episodeTitle || ""
-        };
-        const sessKey = `${epKey}|${r.sessionId || "no-session"}`;
-        bySessionTotal[sessKey] = (bySessionTotal[sessKey] || 0) + (r.ms || 0);
-      });
-    });
-    const statsByEpisode = {};
-    Object.entries(bySessionTotal).forEach(([k, ms]) => {
-      const parts = k.split("|");
-      const epKey = parts.slice(0, 3).join("|");
-      const sessionId = parts[3];
-      if (!statsByEpisode[epKey]) {
-        const lbl = labelByEpisode[epKey] || {};
-        statsByEpisode[epKey] = { totals: [], sessions: [], label: lbl };
+        // タップで最近傍点のツールチップ（固定でなければ）
+        if (e.changedTouches.length === 1 && !g.tipLocked) {
+          const t = e.changedTouches[0];
+          const hit = findNearestPoint(g, t.clientX, t.clientY);
+          if (hit) g.tooltip.show(`${hit.day}日\n${formatShort(hit.ms)}`, t.clientX, t.clientY);
+          else g.tooltip.hide();
+        }
+      },
+      { passive: true }
+    );
+
+    // Pointer-based drag scaling（PC/タッチ/ペン共通の縦ドラッグズーム）
+    enableVerticalDragScaling(container, g, drawMonthTrend);
+
+    // ホバー（PC）：軽いスロットル＋抑制考慮
+    canvas.onmousemove = (e) => {
+      const tNow = performance.now();
+      if (tNow - g.lastHoverTs < g.hoverThrottleMs) return;
+      g.lastHoverTs = tNow;
+      if (g.suppressTooltip || !g.ctx || g.tipLocked) {
+        if (!g.tipLocked) g.tooltip.hide();
+        return;
       }
-      statsByEpisode[epKey].totals.push(ms);
-      statsByEpisode[epKey].sessions.push({ sessionId, ms });
+      const hit = findNearestPoint(g, e.clientX, e.clientY);
+      if (hit) g.tooltip.show(`${hit.day}日\n${formatShort(hit.ms)}`, e.clientX, e.clientY);
+      else g.tooltip.hide();
+    };
+    canvas.onmouseleave = () => {
+      if (!g.tipLocked) g.tooltip.hide();
+    };
+
+    // クリックで固定/解除
+    canvas.addEventListener("click", (e) => {
+      const hit = findNearestPoint(g, e.clientX, e.clientY);
+      if (hit) {
+        g.tipLocked = true;
+        g.tooltip.show(`${hit.day}日\n${formatShort(hit.ms)}`, e.clientX, e.clientY);
+      } else {
+        g.tipLocked = false;
+        g.tooltip.hide();
+      }
     });
 
-    const f = frag();
-    Object.values(statsByEpisode)
-      .map(v => {
-        const totals = v.totals;
-        return {
-          ...v.label,
-          count: totals.length,
-          total: totals.reduce((s, x) => s + x, 0),
-          min: totals.length ? Math.min(...totals) : 0,
-          max: totals.length ? Math.max(...totals) : 0,
-          median: median(totals),
-          sessions: v.sessions
-        };
-      })
-      .sort((a, b) => b.total - a.total)
-      .forEach(row => {
-        const tr = document.createElement("tr");
-        const td = document.createElement("td"); td.setAttribute("colspan", "3");
-        const detailsEl = document.createElement("details");
-        const summary = document.createElement("summary");
-
-        const title = `[${row.site}] ${row.episodeTitle} / ${row.workTitle}`;
-        const stats = `中央値 ${fmt(row.median)} / 最小 ${fmt(row.min)} / 最大 ${fmt(row.max)} （${row.count}回）`;
-
-        // タイトル（1行省略）
-        const titleSpan = document.createElement("span");
-        titleSpan.className = "ep-title truncate-1";
-        titleSpan.title = title;
-        titleSpan.textContent = title;
-
-        // サブ情報
-        const statsDiv = document.createElement("div");
-        statsDiv.className = "mono";
-        statsDiv.style.marginTop = "4px";
-        statsDiv.textContent = stats;
-
-        summary.appendChild(titleSpan);
-        summary.appendChild(statsDiv);
-
-        const divSessions = document.createElement("div"); divSessions.className = "sessions";
-        row.sessions.sort((a, b) => b.ms - a.ms).forEach(s => {
-          const div = document.createElement("div");
-          div.className = "mono";
-          div.textContent = `session ${shortId(s.sessionId)}: ${fmt(s.ms)}`;
-          divSessions.appendChild(div);
-        });
-
-        detailsEl.append(summary, divSessions);
-        td.appendChild(detailsEl);
-        tr.appendChild(td);
-        f.appendChild(tr);
-      });
-    epTbody.appendChild(f);
-    injectTableDataLabels();
+    // リサイズ
+    window.addEventListener(
+      "resize",
+      () => {
+        g.isMobile = window.innerWidth <= 599;
+        drawMonthTrend(container, g);
+      },
+      { passive: true }
+    );
   }
 
-  // Library grouping
+  // データ更新
+  const key = JSON.stringify(logs);
+  if (key !== container._graph.cacheKey) {
+    container._graph.cacheKey = key;
+  }
+
+  // 整形＋描画
+  hydrateMonthTrend(container._graph, logs);
+  drawMonthTrend(container, container._graph);
+}
+
+/* ===================== core: data ===================== */
+function hydrateMonthTrend(g, logs) {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  const today = now.getDate();
+  g.today = today;
+  const ym = `${year}-${pad2(month + 1)}`;
+
+  const normalizeDay = (d) => 10 * (d / today); // 今日=10
+  const arr = [];
+  let totalMs = 0,
+    nonZeroCount = 0,
+    maxRaw = 0;
+
+  for (let d = 1; d <= today; d++) {
+    const keyDay = `${ym}-${pad2(d)}`;
+    const ms = logs[keyDay] || 0;
+    if (ms > 0) {
+      totalMs += ms;
+      nonZeroCount++;
+    }
+    maxRaw = Math.max(maxRaw, ms);
+    arr.push({ day: d, ms, xNorm: normalizeDay(d) });
+  }
+  g.data = arr;
+
+  // 縦軸基準（最大値+2分、最低10分）
+  const BUFFER_MS = 2 * 60 * 1000;
+  const MIN_TOP = 10 * 60 * 1000;
+  g.baseTop = Math.max(MIN_TOP, maxRaw + BUFFER_MS);
+
+  // 説明（非ゼロ平均）
+  const desc = $("#chart-desc-id");
+  if (desc) {
+    const avgMs = nonZeroCount ? totalMs / nonZeroCount : 0;
+    desc.textContent = `今月の読書推移。平均 ${formatReadable(avgMs)}、最大 ${formatReadable(
+      g.baseTop
+    )}、${today}日分。横軸は現在=10で固定、縦軸は調整可能。`;
+  }
+}
+
+/* ===================== core: draw ===================== */
+function drawMonthTrend(container, g) {
+  // 古いフォールバック除去
+  const oldEmpty = container.querySelector(".empty");
+  if (oldEmpty) oldEmpty.remove();
+
+  // Canvas サイズ/DPR
+  const DPR = window.devicePixelRatio || 1;
+  const contW = Math.max(320, container.clientWidth);
+  const contH = Math.max(280, container.clientHeight || 320);
+
+  const sizeChanged = g.lastSize.w !== contW || g.lastSize.h !== contH || g.lastSize.dpr !== DPR;
+  if (sizeChanged) {
+    g.canvas.width = contW * DPR;
+    g.canvas.height = contH * DPR;
+    g.canvas.style.width = `${contW}px`;
+    g.canvas.style.height = `${contH}px`;
+    g.lastSize = { w: contW, h: contH, dpr: DPR };
+    g.ctx = g.canvas.getContext("2d");
+  }
+  const ctx = g.ctx;
+  if (!ctx) return;
+
+  // 座標リセット＋DPR適用
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.scale(DPR, DPR);
+  ctx.clearRect(0, 0, contW, contH);
+
+  // style tokens
+  const cs = getComputedStyle(document.documentElement);
+  const brand500 = cs.getPropertyValue("--brand-500").trim();
+  const brand600 = cs.getPropertyValue("--brand-600").trim();
+  const brand200 = cs.getPropertyValue("--brand-200").trim();
+  const muted = cs.getPropertyValue("--muted").trim();
+  const border = cs.getPropertyValue("--border").trim();
+  const text = cs.getPropertyValue("--text").trim();
+  const surface = cs.getPropertyValue("--surface").trim();
+
+  // 背景
+  ctx.fillStyle = surface;
+  ctx.fillRect(0, 0, contW, contH);
+
+  // paddings
+  const PAD_L = g.isMobile ? 60 : 48;
+  const PAD_R = g.isMobile ? 28 : 20;
+  const PAD_T = g.isMobile ? 68 : 56;
+  const PAD_B = g.isMobile ? 76 : 64;
+
+  const innerW = contW - PAD_L - PAD_R;
+  const innerH = contH - PAD_T - PAD_B;
+  const zeroY = PAD_T + innerH / 2;
+
+  // 座標変換
+  const xToPx = (xNorm) => PAD_L + (xNorm / 10) * innerW;
+  const topMax = g.baseTop * g.yScaleFactor;
+  const yToPx = (ms) => zeroY - Math.min(1, ms / topMax) * (innerH / 2);
+
+  // 軸
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = text;
+  // 0ライン
+  ctx.beginPath();
+  ctx.moveTo(PAD_L, zeroY);
+  ctx.lineTo(contW - PAD_R, zeroY);
+  ctx.stroke();
+  // Y軸
+  ctx.beginPath();
+  ctx.moveTo(PAD_L, PAD_T);
+  ctx.lineTo(PAD_L, contH - PAD_B);
+  ctx.stroke();
+
+  // グリッド
+  ctx.setLineDash([4, 4]);
+  ctx.strokeStyle = border;
+  ctx.lineWidth = 1;
+  [0.25, 0.5, 0.75].forEach((r) => {
+    const gyUp = zeroY - r * (innerH / 2);
+    const gyDn = zeroY + r * (innerH / 2);
+    ctx.beginPath();
+    ctx.moveTo(PAD_L, gyUp);
+    ctx.lineTo(contW - PAD_R, gyUp);
+    ctx.stroke();
+    ctx.save();
+    ctx.globalAlpha = 0.5;
+    ctx.beginPath();
+    ctx.moveTo(PAD_L, gyDn);
+    ctx.lineTo(contW - PAD_R, gyDn);
+    ctx.stroke();
+    ctx.restore();
+  });
+  ctx.setLineDash([]);
+
+  // Yラベル（topMax に連動）
+  ctx.fillStyle = muted;
+  ctx.font = "12px sans-serif";
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  [
+    { r: 1.0, label: formatShort(topMax) },
+    { r: 0.75, label: formatShort(Math.round(topMax * 0.75)) },
+    { r: 0.5, label: formatShort(Math.round(topMax * 0.5)) },
+    { r: 0.25, label: formatShort(Math.round(topMax * 0.25)) },
+    { r: 0.0, label: "0" },
+  ].forEach(({ r, label }) => {
+    const ty = zeroY - r * (innerH / 2);
+    const clampedY = Math.max(PAD_T + 10, Math.min(contH - PAD_B - 10, ty));
+    ctx.fillText(label, PAD_L - 8, clampedY);
+  });
+
+  // Xラベル（固定 0..10）
+  ctx.fillStyle = muted;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  const labelCount = g.isMobile ? 5 : 8;
+  const xLabelY = zeroY + innerH / 2 + 8;
+  for (let i = 0; i <= labelCount; i++) {
+    const xn = (10 * i) / labelCount;
+    const px = xToPx(xn);
+    const dayApprox = Math.max(1, Math.round((xn / 10) * g.today));
+    ctx.fillText(String(dayApprox), px, xLabelY);
+  }
+
+  // 平均線（非ゼロ日のみ）
+  const totalMs = g.data.reduce((s, d) => s + (d.ms > 0 ? d.ms : 0), 0);
+  const nonZeroCount = g.data.reduce((s, d) => s + (d.ms > 0 ? 1 : 0), 0);
+  const avgMs = nonZeroCount ? totalMs / nonZeroCount : 0;
+  if (avgMs > 0) {
+    const avgY = yToPx(avgMs);
+    ctx.setLineDash([6, 6]);
+    ctx.strokeStyle = muted;
+    ctx.beginPath();
+    ctx.moveTo(PAD_L, avgY);
+    ctx.lineTo(contW - PAD_R, avgY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = muted;
+    ctx.textAlign = "right";
+    ctx.textBaseline = "bottom";
+    ctx.fillText(
+      `平均 ${formatShort(avgMs)}`,
+      contW - PAD_R - 4,
+      Math.max(PAD_T + 10, avgY - 4)
+    );
+  }
+
+  // データ線（0埋め・連続）
+  if (g.data.length > 0) {
+    ctx.strokeStyle = brand500;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(xToPx(g.data[0].xNorm), yToPx(g.data[0].ms));
+    for (let i = 1; i < g.data.length; i++) {
+      const d = g.data[i];
+      ctx.lineTo(xToPx(d.xNorm), yToPx(d.ms));
+    }
+    ctx.stroke();
+  }
+
+  // ポイント（非ゼロのみ）＋今日強調
+  ctx.fillStyle = brand600;
+  for (const d of g.data) {
+    if (d.ms <= 0) continue;
+    const x = xToPx(d.xNorm);
+    const y = yToPx(d.ms);
+    ctx.beginPath();
+    ctx.arc(x, y, 3, 0, Math.PI * 2);
+    ctx.fill();
+
+    if (d.day === g.today) {
+      ctx.strokeStyle = brand200;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(x, y, 6, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+
+  // 空フォールバック
+  const anyNonZero = g.data.some((d) => d.ms > 0);
+  if (!anyNonZero) {
+    const fallback = document.createElement("div");
+    fallback.className = "empty";
+    fallback.textContent = "今月はまだ読書記録がありません";
+    Object.assign(fallback.style, {
+      position: "absolute",
+      inset: "0",
+      display: "grid",
+      placeItems: "center",
+    });
+    container.appendChild(fallback);
+  }
+}
+
+/* ================ interactions: drag ================= */
+function enableVerticalDragScaling(container, graph, drawFn) {
+  const canvas = graph.canvas;
+  let dragging = false;
+  let startY = 0;
+  let startScale = 1;
+  let longPressArmed = false;
+
+  // 200px 縦ドラッグ ≒ e^1 ≒ 2.7倍変化（滑らかで暴れにくい）
+  const PX_TO_EXP = 1 / 200;
+  const MIN_SCALE = 0.2;
+  const MAX_SCALE = 5;
+
+  canvas.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 && e.pointerType === "mouse") return;
+    if (graph.gesture?.touching) return; // ピンチ中は抑制
+    dragging = true;
+    startY = e.clientY;
+    startScale = graph.yScaleFactor;
+    graph.suppressTooltip = true;
+    graph.tipLocked = false;
+    longPressArmed = e.pointerType !== "mouse"; // モバイルなら長押しの代替にする場合あり
+    canvas.setPointerCapture(e.pointerId);
+  });
+
+  canvas.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    const dy = e.clientY - startY;
+    const next = startScale * Math.exp(dy * PX_TO_EXP);
+    graph.yScaleFactor = clamp(next, MIN_SCALE, MAX_SCALE);
+    drawFn(container, graph);
+  });
+
+  canvas.addEventListener("pointerup", (e) => {
+    if (!dragging) return;
+    dragging = false;
+    graph.suppressTooltip = false;
+    canvas.releasePointerCapture?.(e.pointerId);
+
+    // ドラッグ終了位置でヒット＆ツールチップ（スマホの「ドラッグして離す」でも確認可能）
+    const hit = findNearestPoint(graph, e.clientX, e.clientY);
+    if (hit) {
+      graph.tooltip.show(`${hit.day}日\n${formatShort(hit.ms)}`, e.clientX, e.clientY);
+    } else {
+      graph.tooltip.hide();
+    }
+  });
+
+  canvas.addEventListener("pointercancel", () => {
+    if (!dragging) return;
+    dragging = false;
+    graph.suppressTooltip = false;
+  });
+}
+
+/* ================ interactions: hit ================== */
+function findNearestPoint(graph, clientX, clientY) {
+  const rect = graph.canvas.getBoundingClientRect();
+  const mx = clientX - rect.left;
+  const my = clientY - rect.top;
+
+  const PAD_L = graph.isMobile ? 60 : 48;
+  const PAD_R = graph.isMobile ? 28 : 20;
+  const PAD_T = graph.isMobile ? 68 : 56;
+  const PAD_B = graph.isMobile ? 76 : 64;
+
+  const contW = graph.lastSize.w;
+  const contH = graph.lastSize.h;
+  const innerW = contW - PAD_L - PAD_R;
+  const innerH = contH - PAD_T - PAD_B;
+  const zeroY = PAD_T + innerH / 2;
+
+  const xToPx = (xNorm) => PAD_L + (xNorm / 10) * innerW;
+  const topMax = graph.baseTop * graph.yScaleFactor;
+  const yToPx = (ms) => zeroY - Math.min(1, ms / topMax) * (innerH / 2);
+
+  const hitRadius = graph.isMobile ? 18 : 10;
+  let nearest = null;
+  let minDist = Infinity;
+
+  for (const d of graph.data) {
+    const px = xToPx(d.xNorm);
+    const py = yToPx(d.ms);
+    const dist = Math.hypot(mx - px, my - py);
+    if (dist < minDist) {
+      minDist = dist;
+      nearest = d;
+    }
+  }
+  return minDist <= hitRadius ? nearest : null;
+}
+
+/* ===================== utils ========================= */
+// 短縮表示: 1h15m / 8m / 30s
+function formatShort(ms) {
+  const s = Math.round(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h${m}m`;
+  if (m > 0) return `${m}m`;
+  return `${sec}s`;
+}
+// 読み上げ用: 1時間15分 / 8分 / 30秒
+function formatReadable(ms) {
+  const s = Math.round(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const parts = [];
+  if (h) parts.push(`${h}時間`);
+  if (m) parts.push(`${m}分`);
+  if (sec && parts.length === 0) parts.push(`${sec}秒`);
+  return parts.join("") || "0分";
+}
+
+/* ===================== tooltip ======================= */
+function createTooltip(host) {
+  const tip = document.createElement("div");
+  tip.style.position = "fixed";
+  tip.style.pointerEvents = "none";
+  tip.style.zIndex = "100";
+  tip.style.transform = "translate3d(0,0,0)";
+  tip.style.background = "var(--surface)";
+  tip.style.color = "var(--text)";
+  tip.style.border = "1px solid var(--border)";
+  tip.style.borderRadius = "10px";
+  tip.style.boxShadow = "var(--shadow-2)";
+  tip.style.padding = "8px 10px";
+  tip.style.font = "12px/1.5 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto";
+  tip.style.whiteSpace = "pre";
+  tip.style.opacity = "0";
+  tip.style.transition = "opacity .12s cubic-bezier(.2,.8,.2,1)";
+  document.body.appendChild(tip);
+
+  let lastHide = 0;
+
+  return {
+    show(text, clientX, clientY) {
+      tip.textContent = text;
+      const offset = 12;
+      tip.style.left = `${clientX + offset}px`;
+      tip.style.top = `${clientY + offset}px`;
+      tip.style.opacity = "1";
+    },
+    hide() {
+      const now = performance.now();
+      if (now - lastHide < 80) return;
+      lastHide = now;
+      tip.style.opacity = "0";
+    },
+  };
+}
+
+
+
+  /* =========================================================
+     Library
+  ========================================================= */
   function groupByWork(details) {
     const byWork = {};
     Object.values(details).forEach(list => {
@@ -468,13 +871,12 @@
     return byWork;
   }
 
-  // Library render（HTML/CSSの lib-* 構造に準拠）
   function renderLibrary(details) {
-    const container = document.getElementById("libraryShelf");
+    const container = $("#libraryShelf");
     if (!container) return;
     clear(container);
-    const grouped = groupByWork(details);
 
+    const grouped = groupByWork(details);
     const q = ($("#filterText")?.value || "").trim().toLowerCase();
     const sortKey = $("#sortLibrary")?.value || "recent";
 
@@ -490,7 +892,7 @@
     if (!works.length) {
       const empty = document.createElement("div");
       empty.className = "empty";
-      empty.textContent = "表示できる作品がありません";
+      empty.textContent = q ? "検索結果がありません" : "表示できる作品がありません";
       f.appendChild(empty);
     } else {
       works.forEach(w => {
@@ -508,55 +910,32 @@
         meta.className = "lib-meta";
         const metaFrag = frag();
         [
-          { icon: "⏱", label: "合計", value: fmt(w.totalMs) },
-          { icon: "📅", label: "最終", value: shortDate(w.latestTs) },
-          { icon: "#", label: "件数", value: String(w.episodes.length) }
+          { label: "合計", value: fmt(w.totalMs) },
+          { label: "最終", value: shortDate(w.latestTs) },
+          { label: "件数", value: String(w.episodes.length) }
         ].forEach(mi => {
           const item = document.createElement("span");
           item.className = "meta-item";
-
-          const ic = document.createElement("span");
-          ic.className = "icon"; ic.setAttribute("aria-hidden", "true");
-          ic.textContent = mi.icon;
-
-          const lab = document.createElement("span");
-          lab.className = "label"; lab.textContent = mi.label;
-
-          const val = document.createElement("span");
-          val.className = "value mono"; val.textContent = mi.value;
-
-          item.append(ic, lab, val);
+          const lab = document.createElement("span"); lab.className = "label"; lab.textContent = mi.label;
+          const val = document.createElement("span"); val.className = "value mono"; val.textContent = mi.value;
+          item.append(lab, val);
           metaFrag.appendChild(item);
         });
         meta.appendChild(metaFrag);
 
         const actions = document.createElement("span");
         actions.className = "lib-actions";
-
-        const focusBtn = document.createElement("button");
-        focusBtn.className = "open-work";
-        focusBtn.textContent = "ライブラリで表示";
-        focusBtn.addEventListener("click", (e) => {
-          e.preventDefault(); e.stopPropagation();
-          detailsEl.open = true;
-          detailsEl.scrollIntoView({ behavior: "smooth", block: "center" });
-          detailsEl.classList.add("highlight");
-          setTimeout(() => detailsEl.classList.remove("highlight"), 2400);
-        });
-
         const openBtn = document.createElement("button");
-        openBtn.className = "open-work";
-
+        openBtn.className = "open-work small";
         openBtn.textContent = "作品ページへ";
         openBtn.addEventListener("click", (e) => {
           e.preventDefault(); e.stopPropagation();
           openWorkPage(detailsEl.dataset.workKey);
         });
+        actions.append(openBtn);
 
-        actions.append(focusBtn, openBtn);
-
-        // episodes list (expanded)
-        const list = document.createElement("div"); list.className = "episodes";
+        const list = document.createElement("div");
+        list.className = "episodes";
         w.episodes
           .sort((a, b) => a.ts - b.ts)
           .forEach(ep => {
@@ -570,269 +949,266 @@
             list.appendChild(row);
           });
 
-        // order: Title → Meta → Actions（スマホ縦並びでも自然）
-        summary.append(leftTitle);
-        summary.append(meta);
-        summary.append(actions);
-
-        detailsEl.append(summary);
-        detailsEl.append(list);
+        summary.append(leftTitle, meta, actions);
+        detailsEl.append(summary, list);
         f.appendChild(detailsEl);
       });
     }
     container.appendChild(f);
   }
 
-  function highlightWork(workKey) {
-    const el = document.querySelector(`[data-work-key="${CSS.escape(workKey)}"]`);
-    if (!el) return;
-    el.open = true;
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
-    el.classList.add("highlight");
-    setTimeout(() => el.classList.remove("highlight"), 2400);
+  /* =========================================================
+     Work page
+  ========================================================= */
+  function openWorkPage(workKey) {
+    const grouped = groupByWork(lastDetails);
+    const w = grouped[workKey];
+    if (!w) {
+      showToast("作品データが見つかりません", 1600, "error");
+      return;
+    }
+    const titleEl = $("#workPageTitle");
+    const metaEl = $("#workMeta");
+    if (titleEl) titleEl.textContent = w.workTitle || "(タイトルなし)";
+    if (metaEl) metaEl.textContent = `サイト: ${w.site} / 合計: ${fmt(w.totalMs)} / 最終: ${shortDate(w.latestTs)} / 件数: ${w.episodes.length}`;
+
+    // Quick stats
+    updateWorkQuickStats(w);
+
+    // Episodes
+    const listEl = $("#workEpisodes");
+    clear(listEl);
+    const ef = frag();
+    w.episodes.sort((a, b) => (b.ts || 0) - (a.ts || 0)).forEach(ep => {
+      const row = document.createElement("div"); row.className = "episode";
+      const aEl = document.createElement("a");
+      aEl.href = ep.url || "#"; aEl.target = "_blank"; aEl.rel = "noopener";
+      aEl.textContent = ep.episodeTitle || "(no title)";
+      const time = document.createElement("span"); time.className = "mono muted"; time.textContent = fmt(ep.ms || 0);
+      const when = document.createElement("span"); when.className = "mono muted"; when.textContent = shortDate(ep.ts || 0);
+      row.append(aEl, time, when);
+      ef.appendChild(row);
+    });
+    listEl.appendChild(ef);
+
+    // Inner stats
+    const totalsBySession = {};
+    w.episodes.forEach(ep => {
+      const sid = ep.sessionId || "no-session";
+      totalsBySession[sid] = (totalsBySession[sid] || 0) + (ep.ms || 0);
+    });
+    const totalsArr = Object.values(totalsBySession);
+    const cards = $("#workInnerStats");
+    clear(cards);
+    const cf = frag();
+    [
+      { label: "作品内合計", value: fmt(w.totalMs) },
+      { label: "中央値（セッション）", value: fmt(median(totalsArr)) },
+      { label: "最小（セッション）", value: fmt(totalsArr.length ? Math.min(...totalsArr) : 0) },
+      { label: "最大（セッション）", value: fmt(totalsArr.length ? Math.max(...totalsArr) : 0) },
+    ].forEach(it => {
+      const card = document.createElement("div");
+      card.className = "card";
+      const title = document.createElement("div");
+      title.className = "title";
+      title.textContent = it.label;
+      const meta = document.createElement("div");
+      meta.className = "meta mono";
+      meta.textContent = it.value;
+      card.append(title, meta);
+      cf.appendChild(card);
+    });
+    cards.appendChild(cf);
+
+    switchView("work");
   }
+
   function updateWorkQuickStats(work) {
-  const quickA = document.querySelector("#workInnerQuickA .value");
-  const quickB = document.querySelector("#workInnerQuickB .value");
-
-  if (!work || !Array.isArray(work.episodes)) return;
-
-  const todayKey = new Date().toISOString().slice(0, 10);
-
-  const todayTotal = work.episodes
-    .filter(ep => {
-      if (!ep.ts) return false;
-      const d = new Date(ep.ts);
-      const key = d.toISOString().slice(0, 10);
-      return key === todayKey;
-    })
-    .reduce((sum, ep) => sum + (ep.ms || 0), 0);
-
-  if (quickA) quickA.textContent = fmt(todayTotal);
-  if (quickB) quickB.textContent = fmt(work.totalMs);
-}
-
-function openWorkPage(workKey) {
-  const grouped = groupByWork(lastDetails);
-  const w = grouped[workKey];
-  if (!w) {
-    showToast("作品データが見つかりません", 1600, "error");
-    return;
+    const quickA = document.querySelector("#workInnerQuickA .value");
+    const quickB = document.querySelector("#workInnerQuickB .value");
+    if (!work || !Array.isArray(work.episodes)) return;
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const todayTotal = work.episodes
+      .filter(ep => ep.ts && new Date(ep.ts).toISOString().slice(0, 10) === todayKey)
+      .reduce((sum, ep) => sum + (ep.ms || 0), 0);
+    if (quickA) quickA.textContent = fmt(todayTotal);
+    if (quickB) quickB.textContent = fmt(work.totalMs);
   }
 
-  const titleEl = document.getElementById("workPageTitle");
-  const metaEl = document.getElementById("workMeta");
-  if (titleEl) titleEl.textContent = w.workTitle || "(タイトルなし)";
-  if (metaEl) metaEl.textContent = `サイト: ${w.site} / 合計: ${fmt(w.totalMs)} / 最終: ${shortDate(w.latestTs)} / 件数: ${w.episodes.length}`;
-
-  // ✅ 今日・累計の統計を更新
-  updateWorkQuickStats(w);
-
-  // エピソード一覧（最新順）
-  const listEl = document.getElementById("workEpisodes");
-  clear(listEl);
-  const ef = frag();
-  w.episodes.sort((a, b) => b.ts - a.ts).forEach(ep => {
-    const row = document.createElement("div"); row.className = "episode";
-    const aEl = document.createElement("a");
-    aEl.href = ep.url || "#"; aEl.target = "_blank"; aEl.rel = "noopener";
-    aEl.textContent = ep.episodeTitle || "(no title)";
-    const time = document.createElement("span"); time.className = "mono muted"; time.textContent = fmt(ep.ms || 0);
-    const when = document.createElement("span"); when.className = "mono muted"; when.textContent = shortDate(ep.ts || 0);
-    row.append(aEl, time, when);
-    ef.appendChild(row);
-  });
-  listEl.appendChild(ef);
-
-  // 作品内統計（セッション単位）
-  const totalsBySession = {};
-  w.episodes.forEach(ep => {
-    const sid = ep.sessionId || "no-session";
-    totalsBySession[sid] = (totalsBySession[sid] || 0) + (ep.ms || 0);
-  });
-  const totalsArr = Object.values(totalsBySession);
-  const cards = document.getElementById("workInnerStats");
-  clear(cards);
-  const cf = frag();
-  [
-    { label: "作品内合計", value: fmt(w.totalMs) },
-    { label: "中央値（セッション）", value: fmt(median(totalsArr)) },
-    { label: "最小（セッション）", value: fmt(totalsArr.length ? Math.min(...totalsArr) : 0) },
-    { label: "最大（セッション）", value: fmt(totalsArr.length ? Math.max(...totalsArr) : 0) },
-  ].forEach(it => {
-    const card = document.createElement("div");
-    card.className = "card";
-    const title = document.createElement("div");
-    title.className = "title";
-    title.textContent = it.label;
-    const meta = document.createElement("div");
-    meta.className = "meta mono";
-    meta.textContent = it.value;
-    card.append(title, meta);
-    cf.appendChild(card);
-  });
-  cards.appendChild(cf);
-
-  switchView("work");
-}
-
-
-
-  // Site toggles（Settings）
+  /* =========================================================
+     Settings toggles
+  ========================================================= */
   function renderToggles(cfg) {
-    const div = document.getElementById("siteToggles");
+    const div = $("#siteToggles");
     if (!div) return;
     clear(div);
     const sites = Object.keys(cfg).length ? Object.keys(cfg) : ["kakuyomu.jp", "syosetu.org", "pixiv.net", "syosetu.com"];
     const f = frag();
     sites.forEach(domain => {
       const label = document.createElement("label");
-      label.style.display = "inline-flex";
-      label.style.alignItems = "center";
-      label.style.gap = "8px";
+      Object.assign(label.style, { display: "inline-flex", alignItems: "center", gap: "8px" });
       const input = document.createElement("input");
-      input.type = "checkbox";
-      input.checked = !!cfg[domain];
+      input.type = "checkbox"; input.checked = !!cfg[domain];
       input.addEventListener("change", (e) => {
         try {
-          B.runtime.sendMessage({ type: "set-site-enable", domain, enabled: e.target.checked }, (resp) => {
-            showToast(resp && resp.ok ? `${domain}: ${e.target.checked ? "有効化" : "無効化"}` : "更新に失敗しました", 1600, resp?.ok ? (e.target.checked ? "success" : "warn") : "error");
-          });
-        } catch {
+          B?.runtime?.sendMessage?.(
+            { type: "set-site-enable", domain, enabled: e.target.checked },
+            (resp) => {
+              if (B.runtime.lastError) {
+                showToast("更新に失敗しました", 1600, "error");
+                return;
+              }
+              showToast(
+                resp && resp.ok
+                  ? `${domain}: ${e.target.checked ? "有効化" : "無効化"}`
+                  : "更新に失敗しました",
+                1600,
+                resp?.ok ? (e.target.checked ? "success" : "warn") : "error"
+              );
+            }
+          );
+        } catch (err) {
+          console.error("set-site-enable failed:", err);
           showToast("更新に失敗しました", 1600, "error");
         }
       });
       const span = document.createElement("span");
-      span.textContent = ` ${domain}`;
+      span.textContent = `${domain}`;
       label.append(input, span);
       f.appendChild(label);
     });
     div.appendChild(f);
   }
 
-  // Tables: mobile card labels injection（スマホカード型への橋渡し）
-  function injectTableDataLabels() {
-    console.log("injectTableDataLabels called");
-    const defs = {
-      tableDaily: ["日付", "読書時間（h:mm:ss）"],
-      tableDetails: ["日付", "サイト", "作品", "話数", "時間", "時刻", "セッション"],
-      tableAggWork: ["サイト", "作品", "合計時間（h:mm:ss）"],
-      tableAggEpisode: ["作品", "話数", "セッション合計"],
-    };
-    Object.entries(defs).forEach(([id, headers]) => {
-      const table = document.getElementById(id);
-      if (!table) return;
-      table.querySelectorAll("tbody tr").forEach(tr => {
-        tr.querySelectorAll("td").forEach((td, i) => {
-          if (!td.hasAttribute("data-label") && headers[i]) {
-            td.setAttribute("data-label", headers[i]);
-          }
-        });
-      });
-    });
+  /* =========================================================
+     Composite render
+  ========================================================= */
+  function renderAll(changed = {}) {
+    if (changed.live) renderHomeSummary(lastLive, lastLogs);
+    if (changed.details) renderRecentWorks(lastDetails);
+    if (changed.logs) renderMonthTrendGraph(lastLogs);
+    if (changed.details) renderLibrary(lastDetails);
+    if (changed.siteEnable) renderToggles(lastSiteEnable);
   }
 
-  // Composite render
-  function renderAll() {
-    renderLive(lastLive);
-    renderRecentWorks(lastDetails);
-    renderMonthSummary(lastLogs);
-    renderDaily(lastLogs);
-    renderDetails(lastDetails);
-    renderWorkAggregates(lastDetails);
-    renderAggregates(lastDetails);
-    renderLibrary(lastDetails);
-    renderToggles(lastSiteEnable);
-    injectTableDataLabels();
-  }
-
-  // Load
+  /* =========================================================
+     Load & Runtime messaging
+  ========================================================= */
   function load() {
+    // Export snapshot
     try {
-      B?.runtime?.sendMessage({ type: "export-store" }, (resp) => {
-        console.log("export-store resp:", resp); // ←追加
+      B?.runtime?.sendMessage?.({ type: "export-store" }, (resp) => {
+        if (B?.runtime?.lastError) {
+          showToast("データロードに失敗しました", 1600, "error");
+          return;
+        }
         const snap = (resp && resp.ok && resp.snapshot) ? resp.snapshot : {};
+        const changedLogs = JSON.stringify(lastLogs) !== JSON.stringify(snap[KEY_LOG] || {});
+        const changedDetails = JSON.stringify(lastDetails) !== JSON.stringify(snap[KEY_DETAILS] || {});
         lastLogs = snap[KEY_LOG] || {};
         lastDetails = snap[KEY_DETAILS] || {};
-        console.log("lastLogs:", lastLogs, "lastDetails:", lastDetails); // ←追加
-        renderAll();
+        renderAll({ logs: changedLogs, details: changedDetails });
       });
-    } catch { }
+    } catch (e) {
+      console.error("export-store failed:", e);
+      showToast("データロードに失敗しました", 1600, "error");
+    }
+
+    // Live stats
     try {
-      B?.runtime?.sendMessage({ type: "get-stats" }, (live) => {
+      B?.runtime?.sendMessage?.({ type: "get-stats" }, (live) => {
+        if (B?.runtime?.lastError) return;
+        const changed = (lastLive.total !== (live?.total ?? lastLive.total)) || (lastLive.daily !== (live?.daily ?? lastLive.daily));
         lastLive = (live && typeof live === "object") ? live : { total: 0, daily: 0 };
-        renderLive(lastLive);
+        if (changed) renderAll({ live: true });
       });
-    } catch { }
+    } catch (e) {
+      console.error("get-stats failed:", e);
+    }
+
+    // Site enable
     try {
-      B?.runtime?.sendMessage({ type: "get-site-enable" }, (cfg) => {
+      B?.runtime?.sendMessage?.({ type: "get-site-enable" }, (cfg) => {
+        if (B?.runtime?.lastError) return;
+        const changed = JSON.stringify(lastSiteEnable) !== JSON.stringify(cfg || {});
         lastSiteEnable = cfg || {};
-        renderToggles(lastSiteEnable);
+        if (changed) renderAll({ siteEnable: true });
       });
-    } catch { }
+    } catch (e) {
+      console.error("get-site-enable failed:", e);
+    }
   }
 
-  // Live updates
   try {
     B?.runtime?.onMessage?.addListener((msg) => {
-      if (msg?.type === "live-update" && msg.payload) {
+      if (!msg || !msg.type) return;
+      if (msg.type === "live-update" && msg.payload) {
+        const changed = (lastLive.total !== (msg.payload.total ?? lastLive.total)) || (lastLive.daily !== (msg.payload.daily ?? lastLive.daily));
         lastLive = {
           total: msg.payload.total ?? lastLive.total,
-          daily: msg.payload.daily ?? lastLive.daily
+          daily: msg.payload.daily ?? lastLive.daily,
         };
-        renderLive(lastLive);
-      } else if (msg?.type === "export-store") {
+        if (changed) renderAll({ live: true });
+      } else if (msg.type === "export-store") {
         const snap = (msg.snapshot || {});
+        const changedLogs = JSON.stringify(lastLogs) !== JSON.stringify(snap[KEY_LOG] || lastLogs);
+        const changedDetails = JSON.stringify(lastDetails) !== JSON.stringify(snap[KEY_DETAILS] || lastDetails);
         lastLogs = snap[KEY_LOG] || lastLogs;
         lastDetails = snap[KEY_DETAILS] || lastDetails;
-        renderAll();
-      } else if (msg?.type === "import-store") {
+        renderAll({ logs: changedLogs, details: changedDetails });
+      } else if (msg.type === "import-store") {
         showToast("データをインポートしました", 1600, "success");
         load();
       }
     });
-  } catch { }
+  } catch (e) {
+    console.error("runtime.onMessage failed:", e);
+  }
 
-  // Actions
+  /* =========================================================
+     Actions
+  ========================================================= */
   $("#resetToday")?.addEventListener("click", () => {
-    if (!confirm("今日のログを消去します。よろしいですか？")) return;
+    if (!confirm("今日のログを消去します。取り消し不可です。よろしいですか？")) return;
     try {
-      B.runtime.sendMessage({ type: "reset-today" }, (resp) => {
-        if (!(resp && resp.ok)) alert("reset-today に失敗しました");
+      B?.runtime?.sendMessage?.({ type: "reset-today" }, (resp) => {
+        if (B?.runtime?.lastError || !(resp && resp.ok)) showToast("reset-today に失敗しました", 1600, "error");
         else showToast("今日のログをリセットしました", 1600, "warn");
         load();
       });
-    } catch { load(); }
+    } catch (e) {
+      console.error("reset-today failed:", e);
+      showToast("リセットに失敗しました", 1600, "error");
+      load();
+    }
   });
   $("#resetAll")?.addEventListener("click", () => {
-    if (!confirm("全てのログを消去します。よろしいですか？")) return;
+    if (!confirm("全てのログを消去します。取り消し不可です。よろしいですか？")) return;
     try {
-      B.runtime.sendMessage({ type: "reset-all" }, (resp) => {
-        if (!(resp && resp.ok)) alert("reset-all に失敗しました");
+      B?.runtime?.sendMessage?.({ type: "reset-all" }, (resp) => {
+        if (B?.runtime?.lastError || !(resp && resp.ok)) showToast("reset-all に失敗しました", 1600, "error");
         else showToast("全ログを削除しました", 1600, "error");
         load();
       });
-    } catch { load(); }
+    } catch (e) {
+      console.error("reset-all failed:", e);
+      showToast("削除に失敗しました", 1600, "error");
+      load();
+    }
   });
-  $("#backToLibrary")?.addEventListener("click", () => {
-    switchView("library");
-  });
+  $("#backToLibrary")?.addEventListener("click", () => switchView("library"));
 
-  // Toolbar navigation
-
-  $$(".toolbar .tab").forEach(btn => {
-    btn.addEventListener("click", () => switchView(btn.dataset.view));
-  });
-  bindTabKeyboard();
-
-  // Filters in library
   $("#filterText")?.addEventListener("input", () => renderLibrary(lastDetails));
   $("#sortLibrary")?.addEventListener("change", () => renderLibrary(lastDetails));
 
-  // Init
+  /* =========================================================
+     Init
+  ========================================================= */
   document.addEventListener("DOMContentLoaded", () => {
     bindTheme();
+    bindTabs();
     switchView("home");
     load();
+    renderMonthTrendGraph(lastLogs);
   });
 })();
