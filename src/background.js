@@ -402,55 +402,74 @@ function stripPixivLeadingTags(rawTitle) {
   s = s.replace(/^(\s*#\S+(?:\([^)]+\))?\s*)+/i, "").trim();
   return s;
 }
-function stripPixivSuffix(rawTitle) { return String(rawTitle || "").replace(/\s*-\s*pixiv$/i, "").trim(); }
+function stripPixivLeadingTags(rawTitle) {
+  // 先頭のハッシュタグ群を除去。ただし #<数字> は話数の可能性があるため残す
+  // 例: "#ブルアカ #ヤンデレ もしも..." は除去、"#1 俺は..." は残す
+  let s = String(rawTitle || "").trim();
+  s = s.replace(/^(\s*#(?!\d+\b)\S+(?:\([^)]+\))?\s*)+/u, "").trim();
+  return s;
+}
 function parsePixiv(u, rawTitle) {
   const site = SITE.PIXIV;
-  const isContentPath = /^\/novel\/show\.php$/i.test(u.pathname) && u.searchParams.has("id");
-  const pixivId = u.searchParams.get("id") || undefined;
-  if (!isContentPath) {
+
+  // 1) URL gate: 小説本文ページのみ対象
+  const pathname = String(u.pathname || "");
+  const search = u.searchParams || new URLSearchParams();
+  const isNovelContent = /^\/novel\/show\.php$/i.test(pathname) && search.has("id");
+  const pixivId = search.get("id") || undefined;
+
+  if (!isNovelContent) {
+    // 明確に本文ページではない
     return { isContent: false, cert: "none", site, workTitle: "", episodeTitle: "", author: "", pixivId: undefined };
   }
+
+  // 2) タイトル前処理 & プレースホルダ拒否
   const raw = String(rawTitle || "").trim();
-  const pre = stripPixivSuffix(stripPixivLeadingTags(raw));
-  if (!pre) {
+  if (!raw || /^\[pixiv\]/i.test(raw) || /ローディング中/i.test(raw)) {
     return { isContent: true, cert: "url", site, workTitle: "", episodeTitle: "", author: "", pixivId };
   }
-  const rxSeries = /^#(\d+)\s+(.+?)\s*\|\s*(.+?)\s*-\s*.+?$/i;
-  const mSeries = pre.match(rxSeries);
-  if (mSeries) {
-    const epNumber = mSeries[1];
-    const epSubtitle = mSeries[2];
-    const work = mSeries[3];
-    const episodeTitle = `#${epNumber} ${cleanWhitespace(epSubtitle)}`;
-    const workTitle = cleanWhitespace(work);
-    if (workTitle) {
-      return { isContent: true, cert: "title", site, workTitle, episodeTitle, author: "", pixivId };
-    }
+
+  // 3) シリーズ形式（タグ除去前）
+  let m = raw.match(/^#(\d+)\s+(.+?)\s*\|\s*(.+?)(?:\s*-\s*.+)?$/u);
+  if (m) {
+    const epNumber = m[1];
+    const epSubtitle = m[2].replace(/\u3000/g, " ").replace(/\s+/g, " ").trim();
+    const workTitle = m[3].replace(/\u3000/g, " ").replace(/\s+/g, " ").trim();
+    const episodeTitle = `#${epNumber} ${epSubtitle}`;
+    return { isContent: true, cert: "title", site, workTitle, episodeTitle, author: "", pixivId };
   }
-  const rxStandalone = /^(.+?)\s*\|\s*(.+?)\s*-\s*.+$/i;
-  const mStandalone = pre.match(rxStandalone);
-  if (mStandalone) {
-    const epSubtitle = mStandalone[1];
-    const work = mStandalone[2];
-    const episodeTitle = cleanWhitespace(epSubtitle);
-    const workTitle = cleanWhitespace(work);
-    if (workTitle || episodeTitle) {
-      return { isContent: true, cert: "title", site, workTitle, episodeTitle, author: "", pixivId };
-    }
+
+  // 4) 単発処理：タグ除去 → サフィックス除去 → 抽出
+  let s = raw.replace(/^(\s*#\S+(?:\([^)]+\))?\s*)+/u, "").trim();
+
+  // 「- pixiv」や「- 作者の小説 - pixiv」を後方から落とす
+  s = s.replace(/\s*-\s*pixiv\s*$/iu, "")
+       .replace(/\s*-\s*[^-]*?の小説\s*-\s*pixiv\s*$/iu, "")
+       .trim();
+
+  // 「副題 | 作品」（話数なし前提）
+  m = s.match(/^(?!#\d+\s+)(.+?)\s*\|\s*(.+?)(?:\s*-\s*.+)?$/u);
+  if (m) {
+    const episodeTitle = m[1].replace(/\u3000/g, " ").replace(/\s+/g, " ").trim();
+    const workTitle = m[2].replace(/\u3000/g, " ").replace(/\s+/g, " ").trim();
+    return { isContent: true, cert: "title", site, workTitle, episodeTitle, author: "", pixivId };
   }
-  const rxSingle = /^(.+?)\s*-\s*.+$/i;
-  const mSingle = pre.match(rxSingle);
-  if (mSingle) {
-    const title = cleanWhitespace(mSingle[1]);
-    if (title) {
-      return { isContent: true, cert: "title", site,
-        workTitle: title, episodeTitle: title, author: "", pixivId };
-    }
+
+  // 「タイトル - 作者の小説 - pixiv」など
+  m = s.match(/^(.+?)\s*-\s*.+$/u);
+  if (m) {
+    const title = m[1].replace(/\u3000/g, " ").replace(/\s+/g, " ").trim();
+    return { isContent: true, cert: "title", site, workTitle: title, episodeTitle: title, author: "", pixivId };
   }
-  // 修正: rxSeries, rxStandalone, rxSingle にマッチしない場合、無条件で cert="url" に設定
-  // これにより、無効なタイトル（例: "[Pixiv]" やシンプルすぎるプレースホルダー）をカウント対象外にする
+
+  // 5) フォールバック（本文だが構造不明）
+  const title = s.replace(/\u3000/g, " ").replace(/\s+/g, " ").trim();
+  if (title) {
+    return { isContent: true, cert: "title", site, workTitle: title, episodeTitle: title, author: "", pixivId };
+  }
   return { isContent: true, cert: "url", site, workTitle: "", episodeTitle: "", author: "", pixivId };
 }
+
 
 /* Hameln */
 function parseHameln(u, title, doc) {
