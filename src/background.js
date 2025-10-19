@@ -403,8 +403,6 @@ function stripPixivLeadingTags(rawTitle) {
   return s;
 }
 function stripPixivLeadingTags(rawTitle) {
-  // 先頭のハッシュタグ群を除去。ただし #<数字> は話数の可能性があるため残す
-  // 例: "#ブルアカ #ヤンデレ もしも..." は除去、"#1 俺は..." は残す
   let s = String(rawTitle || "").trim();
   s = s.replace(/^(\s*#(?!\d+\b)\S+(?:\([^)]+\))?\s*)+/u, "").trim();
   return s;
