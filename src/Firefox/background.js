@@ -470,22 +470,21 @@ function parsePixiv(u, rawTitle) {
 
 
 /* Hameln */
-function parseHameln(u, title, doc) {
+function parseHameln(u, title) {
   const site = SITE.HAMELN;
   const path = u.pathname;
 
-  const isSerial = /^\/novel\/\d+\/\d+\.html$/i.test(path);
-  const isTopOrShort = /^\/novel\/\d+\/?$/i.test(path);
+  const isSerial = /^\/novel\/\d+\/\d+\.html$/i.test(path);   // 連載各話
+  const isTopOrShort = /^\/novel\/\d+\/?$/i.test(path);       // 作品トップ or 短編
 
-  // 成人確認ページなどの除外
-  const isGenericTitle = /^ハーメルン\s*-\s*SS･小説投稿サイト-?$/i.test(String(title || "").trim());
-  const hasContent = doc && !!doc.querySelector("#novel_contents, #novel_honbun");
-
-  if (isGenericTitle || !hasContent) {
+  // 成人確認ページや汎用タイトルページは除外
+  const isGenericTitle = /^ハーメルン\s*-\s*SS･小説投稿サイト-?$/i
+    .test(String(title || "").trim());
+  if (isGenericTitle) {
     return { isContent: false, cert: "none", site, workTitle: "", episodeTitle: "", author: "" };
   }
 
-  // ここから先は従来通り
+  // タイトル末尾の「- ハーメルン」を除去して分割
   const trimmed = String(title || "").replace(/\s*-\s*ハーメルン$/i, "").trim();
   const parts = trimmed.split(/\s+-\s+/).map(s => cleanWhitespace(s));
 
@@ -508,6 +507,7 @@ function parseHameln(u, title, doc) {
 
   return { isContent: false, cert: "none", site, workTitle: "", episodeTitle: "", author: "" };
 }
+
 
 
 /* Kakuyomu */
