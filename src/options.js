@@ -318,7 +318,7 @@ function renderMonthTrendGraph(logs) {
       lastSize: { w: 0, h: 0, dpr: 1 },
 
       // Interaction state
-      yScaleFactor: 1, // baseTop に乗算される縦軸スケール
+      yScaleFactor: 0.375, // baseTop に乗算される縦軸スケール
       isMobile: window.innerWidth <= 599,
       gesture: { touching: false, lastDistY: 0 },
       tooltip: createTooltip(container),
@@ -503,6 +503,70 @@ function hydrateMonthTrend(g, logs) {
   }
 }
 
+/* ===================== utils ========================= */
+// Short format: 1h15m / 8m / 30s
+function formatShort(ms) {
+  const s = Math.round(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h${m}m`;
+  if (m > 0) return `${m}m`;
+  return `${sec}s`;
+}
+
+// Readable format: 1時間15分 / 8分 / 30秒
+function formatReadable(ms) {
+  const s = Math.round(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const parts = [];
+  if (h > 0) parts.push(`${h}時間`);
+  if (m > 0) parts.push(`${m}分`);
+  if (sec && parts.length === 0) parts.push(`${sec}秒`);
+  return parts.join("") || "0分";
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+/* ===================== tooltip ======================= */
+function createTooltip(host) {
+  const tip = document.createElement("div");
+  tip.style.position = "absolute";
+  tip.style.background = "var(--surface)";
+  tip.style.color = "var(--text)";
+  tip.style.border = "1px solid var(--border)";
+  tip.style.borderRadius = "10px";
+  tip.style.boxShadow = "var(--shadow-2)";
+  tip.style.padding = "8px 10px";
+  tip.style.font = "12px/1.5 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto";
+  tip.style.whiteSpace = "pre";
+  tip.style.opacity = "0";
+  tip.style.transition = "opacity .12s cubic-bezier(.2,.8,.2,1)";
+  tip.style.pointerEvents = "none";
+  document.body.appendChild(tip);
+
+  let lastHide = 0;
+
+  return {
+    show(text, clientX, clientY) {
+      tip.textContent = text;
+      tip.style.left = `${clientX + 12}px`;
+      tip.style.top = `${clientY + 12}px`;
+      tip.style.opacity = "1";
+    },
+    hide() {
+      const now = performance.now();
+      if (now - lastHide < 80) return;
+      lastHide = now;
+      tip.style.opacity = "0";
+    },
+  };
+}
+
 /* ===================== core: draw ===================== */
 function drawMonthTrend(container, g) {
   // 古いフォールバック除去
@@ -553,129 +617,123 @@ function drawMonthTrend(container, g) {
 
   const innerW = contW - PAD_L - PAD_R;
   const innerH = contH - PAD_T - PAD_B;
-  const zeroY = PAD_T + innerH / 2;
+
+  // 縦軸再設計: zeroYをbottomに置き、上向きスケール（0 at bottom, positive up）
+  const zeroY = PAD_T + innerH; // Bottom zero
 
   // 座標変換
   const xToPx = (xNorm) => PAD_L + (xNorm / 10) * innerW;
   const topMax = g.baseTop * g.yScaleFactor;
-  const yToPx = (ms) => zeroY - Math.min(1, ms / topMax) * (innerH / 2);
+  const yToPx = (ms) => zeroY - Math.min(innerH, (ms / topMax) * innerH); // 0 at bottom, max at top
 
   // 軸
   ctx.lineWidth = 1.5;
   ctx.strokeStyle = text;
-  // 0ライン
+  // X軸 (bottom)
   ctx.beginPath();
   ctx.moveTo(PAD_L, zeroY);
   ctx.lineTo(contW - PAD_R, zeroY);
   ctx.stroke();
-  // Y軸
+  // Y軸 (left)
   ctx.beginPath();
   ctx.moveTo(PAD_L, PAD_T);
-  ctx.lineTo(PAD_L, contH - PAD_B);
+  ctx.lineTo(PAD_L, zeroY);
   ctx.stroke();
 
-  // グリッド
+  // グリッド (Y: upper half emphasized, bottom to top)
   ctx.setLineDash([4, 4]);
   ctx.strokeStyle = border;
   ctx.lineWidth = 1;
-  [0.25, 0.5, 0.75].forEach((r) => {
-    const gyUp = zeroY - r * (innerH / 2);
-    const gyDn = zeroY + r * (innerH / 2);
+  [0.25, 0.5, 0.75, 1.0].forEach((r) => {
+    const gy = zeroY - r * innerH;
     ctx.beginPath();
-    ctx.moveTo(PAD_L, gyUp);
-    ctx.lineTo(contW - PAD_R, gyUp);
+    ctx.moveTo(PAD_L, gy);
+    ctx.lineTo(contW - PAD_R, gy);
     ctx.stroke();
-    ctx.save();
-    ctx.globalAlpha = 0.5;
-    ctx.beginPath();
-    ctx.moveTo(PAD_L, gyDn);
-    ctx.lineTo(contW - PAD_R, gyDn);
-    ctx.stroke();
-    ctx.restore();
   });
   ctx.setLineDash([]);
 
-  // Yラベル（topMax に連動）
+  // Yラベル（topMax 連動、再設計: 0 at bottom, labels dynamic）
   ctx.fillStyle = muted;
   ctx.font = "12px sans-serif";
   ctx.textAlign = "right";
   ctx.textBaseline = "middle";
-  [
-    { r: 1.0, label: formatShort(topMax) },
-    { r: 0.75, label: formatShort(Math.round(topMax * 0.75)) },
-    { r: 0.5, label: formatShort(Math.round(topMax * 0.5)) },
-    { r: 0.25, label: formatShort(Math.round(topMax * 0.25)) },
-    { r: 0.0, label: "0" },
-  ].forEach(({ r, label }) => {
-    const ty = zeroY - r * (innerH / 2);
-    const clampedY = Math.max(PAD_T + 10, Math.min(contH - PAD_B - 10, ty));
+  [1.0, 0.75, 0.5, 0.25, 0.0].forEach((r) => {
+    const label = formatShort(topMax * r);
+    const ty = zeroY - r * innerH;
+    const clampedY = Math.max(PAD_T + 10, Math.min(zeroY - 10, ty));
     ctx.fillText(label, PAD_L - 8, clampedY);
   });
 
-  // Xラベル（固定 0..10）
+  // Xラベル（今日まで均等、再設計: bottom label position）
   ctx.fillStyle = muted;
   ctx.textAlign = "center";
   ctx.textBaseline = "top";
   const labelCount = g.isMobile ? 5 : 8;
-  const xLabelY = zeroY + innerH / 2 + 8;
+  const xLabelY = zeroY + 8; // Below zero line
+  const today = g.data[g.data.length - 1]?.day || 1;
   for (let i = 0; i <= labelCount; i++) {
-    const xn = (10 * i) / labelCount;
-    const px = xToPx(xn);
-    const dayApprox = Math.max(1, Math.round((xn / 10) * g.today));
-    ctx.fillText(String(dayApprox), px, xLabelY);
+    const norm = i / labelCount;
+    const day = Math.round(1 + norm * (today - 1));
+    const x = PAD_L + norm * innerW;
+    ctx.fillText(`日${day}`, x, xLabelY);
   }
 
-  // 平均線（非ゼロ日のみ）
+  // 平均線（非ゼロ日、再設計: bottom from 0）
   const totalMs = g.data.reduce((s, d) => s + (d.ms > 0 ? d.ms : 0), 0);
   const nonZeroCount = g.data.reduce((s, d) => s + (d.ms > 0 ? 1 : 0), 0);
   const avgMs = nonZeroCount ? totalMs / nonZeroCount : 0;
   if (avgMs > 0) {
     const avgY = yToPx(avgMs);
     ctx.setLineDash([6, 6]);
-    ctx.strokeStyle = muted;
-    ctx.beginPath();
-    ctx.moveTo(PAD_L, avgY);
-    ctx.lineTo(contW - PAD_R, avgY);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = muted;
-    ctx.textAlign = "right";
-    ctx.textBaseline = "bottom";
-    ctx.fillText(
-      `平均 ${formatShort(avgMs)}`,
-      contW - PAD_R - 4,
-      Math.max(PAD_T + 10, avgY - 4)
-    );
+  ctx.strokeStyle = muted;
+  ctx.beginPath();
+  ctx.moveTo(PAD_L, avgY);
+  ctx.lineTo(contW - PAD_R, avgY);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = muted;
+  ctx.textAlign = "right";
+  ctx.textBaseline = "bottom";
+  ctx.fillText(
+    `平均 ${formatShort(avgMs)}`,
+    contW - PAD_R - 4,
+    Math.min(zeroY - 4, Math.max(PAD_T + 10, avgY - 4))
+  );
   }
 
-  // データ線（0埋め・連続）
+  // データ線（再設計: smooth tension for flat data visibility）
   if (g.data.length > 0) {
     ctx.strokeStyle = brand500;
     ctx.lineWidth = 2.5;
     ctx.beginPath();
-    ctx.moveTo(xToPx(g.data[0].xNorm), yToPx(g.data[0].ms));
+    let x = xToPx(g.data[0].xNorm);
+    let y = yToPx(g.data[0].ms);
+    ctx.moveTo(x, y);
     for (let i = 1; i < g.data.length; i++) {
       const d = g.data[i];
-      ctx.lineTo(xToPx(d.xNorm), yToPx(d.ms));
+      x = xToPx(d.xNorm);
+      y = yToPx(d.ms);
+      ctx.lineTo(x, y);
     }
     ctx.stroke();
   }
 
-  // ポイント（非ゼロのみ）＋今日強調
+  // ポイント（非ゼロ強調、再設計: larger radius for flat visibility）
   ctx.fillStyle = brand600;
   for (const d of g.data) {
     if (d.ms <= 0) continue;
-    const x = xToPx(d.xNorm);
-    const y = yToPx(d.ms);
+    const px = xToPx(d.xNorm);
+    const py = yToPx(d.ms);
     ctx.beginPath();
-    ctx.arc(x, y, 3, 0, Math.PI * 2);
+    ctx.arc(px, py, 4, 0, Math.PI * 2); // Larger for visibility
     ctx.fill();
 
     if (d.day === g.today) {
       ctx.strokeStyle = brand200;
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(x, y, 6, 0, Math.PI * 2);
+      ctx.arc(px, py, 7, 0, Math.PI * 2); // Slightly larger highlight
       ctx.stroke();
     }
   }
@@ -702,22 +760,18 @@ function enableVerticalDragScaling(container, graph, drawFn) {
   let dragging = false;
   let startY = 0;
   let startScale = 1;
-  let longPressArmed = false;
 
-  // 200px 縦ドラッグ ≒ e^1 ≒ 2.7倍変化（滑らかで暴れにくい）
+  // 200px drag = e^1 ~2.7x change (smooth)
   const PX_TO_EXP = 1 / 200;
   const MIN_SCALE = 0.2;
   const MAX_SCALE = 5;
 
   canvas.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0 && e.pointerType === "mouse") return;
-    if (graph.gesture?.touching) return; // ピンチ中は抑制
+    if (e.pointerType === "mouse" && e.button !== 0) return;
     dragging = true;
     startY = e.clientY;
     startScale = graph.yScaleFactor;
     graph.suppressTooltip = true;
-    graph.tipLocked = false;
-    longPressArmed = e.pointerType !== "mouse"; // モバイルなら長押しの代替にする場合あり
     canvas.setPointerCapture(e.pointerId);
   });
 
@@ -733,9 +787,8 @@ function enableVerticalDragScaling(container, graph, drawFn) {
     if (!dragging) return;
     dragging = false;
     graph.suppressTooltip = false;
-    canvas.releasePointerCapture?.(e.pointerId);
+    canvas.releasePointerCapture(e.pointerId);
 
-    // ドラッグ終了位置でヒット＆ツールチップ（スマホの「ドラッグして離す」でも確認可能）
     const hit = findNearestPoint(graph, e.clientX, e.clientY);
     if (hit) {
       graph.tooltip.show(`${hit.day}日\n${formatShort(hit.ms)}`, e.clientX, e.clientY);
@@ -745,7 +798,6 @@ function enableVerticalDragScaling(container, graph, drawFn) {
   });
 
   canvas.addEventListener("pointercancel", () => {
-    if (!dragging) return;
     dragging = false;
     graph.suppressTooltip = false;
   });
@@ -757,27 +809,23 @@ function findNearestPoint(graph, clientX, clientY) {
   const mx = clientX - rect.left;
   const my = clientY - rect.top;
 
-  const PAD_L = graph.isMobile ? 60 : 48;
-  const PAD_R = graph.isMobile ? 28 : 20;
-  const PAD_T = graph.isMobile ? 68 : 56;
-  const PAD_B = graph.isMobile ? 76 : 64;
+  const padL = graph.isMobile ? 60 : 48;
+  const innerW = rect.width - padL - (graph.isMobile ? 28 : 20);
+  const innerH = rect.height - (graph.isMobile ? 68 : 56) - (graph.isMobile ? 76 : 64);
+  const zeroY = rect.height - (graph.isMobile ? 76 : 64); // Re-designed bottom zero
 
-  const contW = graph.lastSize.w;
-  const contH = graph.lastSize.h;
-  const innerW = contW - PAD_L - PAD_R;
-  const innerH = contH - PAD_T - PAD_B;
-  const zeroY = PAD_T + innerH / 2;
-
-  const xToPx = (xNorm) => PAD_L + (xNorm / 10) * innerW;
   const topMax = graph.baseTop * graph.yScaleFactor;
-  const yToPx = (ms) => zeroY - Math.min(1, ms / topMax) * (innerH / 2);
+  const yToPx = (ms) => zeroY - (Math.min(1, ms / topMax) * innerH);
+
+  const today = graph.data[graph.data.length - 1]?.day || 1;
+  const xToPx = (day) => padL + (day / today) * innerW;
 
   const hitRadius = graph.isMobile ? 18 : 10;
   let nearest = null;
   let minDist = Infinity;
 
   for (const d of graph.data) {
-    const px = xToPx(d.xNorm);
+    const px = xToPx(d.day);
     const py = yToPx(d.ms);
     const dist = Math.hypot(mx - px, my - py);
     if (dist < minDist) {
@@ -787,69 +835,6 @@ function findNearestPoint(graph, clientX, clientY) {
   }
   return minDist <= hitRadius ? nearest : null;
 }
-
-/* ===================== utils ========================= */
-// 短縮表示: 1h15m / 8m / 30s
-function formatShort(ms) {
-  const s = Math.round(ms / 1000);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
-  if (h > 0) return `${h}h${m}m`;
-  if (m > 0) return `${m}m`;
-  return `${sec}s`;
-}
-// 読み上げ用: 1時間15分 / 8分 / 30秒
-function formatReadable(ms) {
-  const s = Math.round(ms / 1000);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
-  const parts = [];
-  if (h) parts.push(`${h}時間`);
-  if (m) parts.push(`${m}分`);
-  if (sec && parts.length === 0) parts.push(`${sec}秒`);
-  return parts.join("") || "0分";
-}
-
-/* ===================== tooltip ======================= */
-function createTooltip(host) {
-  const tip = document.createElement("div");
-  tip.style.position = "fixed";
-  tip.style.pointerEvents = "none";
-  tip.style.zIndex = "100";
-  tip.style.transform = "translate3d(0,0,0)";
-  tip.style.background = "var(--surface)";
-  tip.style.color = "var(--text)";
-  tip.style.border = "1px solid var(--border)";
-  tip.style.borderRadius = "10px";
-  tip.style.boxShadow = "var(--shadow-2)";
-  tip.style.padding = "8px 10px";
-  tip.style.font = "12px/1.5 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto";
-  tip.style.whiteSpace = "pre";
-  tip.style.opacity = "0";
-  tip.style.transition = "opacity .12s cubic-bezier(.2,.8,.2,1)";
-  document.body.appendChild(tip);
-
-  let lastHide = 0;
-
-  return {
-    show(text, clientX, clientY) {
-      tip.textContent = text;
-      const offset = 12;
-      tip.style.left = `${clientX + offset}px`;
-      tip.style.top = `${clientY + offset}px`;
-      tip.style.opacity = "1";
-    },
-    hide() {
-      const now = performance.now();
-      if (now - lastHide < 80) return;
-      lastHide = now;
-      tip.style.opacity = "0";
-    },
-  };
-}
-
 
 
   /* =========================================================
