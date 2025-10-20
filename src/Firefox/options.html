@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="ja" data-theme="system">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>ブックタイマー</title>
+  <meta name="color-scheme" content="light dark" />
+  <link rel="stylesheet" href="options.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="container appbar" role="banner">
+      <div class="brand" aria-label="アプリ名">
+        <div class="logo" aria-hidden="true"></div>
+        <span class="brand-name truncate-1" title="ブックタイマー">ブックタイマー</span>
+      </div>
+
+      <nav class="toolbar" role="tablist" aria-label="ビュー切り替え">
+        <button id="tab-home" data-view="home" class="tab active" role="tab" aria-controls="view-home" aria-selected="true" title="ホーム">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.2 2.4 11h1.9v9h6.4v-6h2.6v6h6.4v-9h1.9L12 3.2z"/></svg>
+          <span class="label truncate-1">ホーム</span>
+        </button>
+        <button id="tab-library" data-view="library" class="tab" role="tab" aria-controls="view-library" aria-selected="false" title="ライブラリ">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h5a2 2 0 0 1 2 2v12H6a2 2 0 0 1-2-2V5zm9 0h7v14h-7zM6 3h5a4 4 0 0 1 4 4v14H6a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4z"/></svg>
+          <span class="label truncate-1">ライブラリ</span>
+        </button>
+        <button id="tab-settings" data-view="settings" class="tab" role="tab" aria-controls="view-settings" aria-selected="false" title="設定">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 1 2 3 4-1 1 4 4 1-1 4 3 2-3 2 1 4-4 1-1 4-4-1-2 3-2-3-4 1-1-4-4-1 1-4-3-2 3-2-1-4 4-1 1-4 4 1 2-3zM9 12a3 3 0 1 0 6 0 3 3 0 0 0-6 0z"/></svg>
+          <span class="label truncate-1">設定</span>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container main">
+    <div class="views" role="presentation">
+      <!-- Home -->
+      <section id="view-home" class="view" role="tabpanel" aria-labelledby="tab-home">
+        <div class="home-primary">
+          <!-- Summary -->
+          <div class="panel home-panel summary-panel">
+            <h2>今月の読書サマリ</h2>
+            <div class="stats stats-emphasized">
+              <div class="stat stat-secondary">
+                <span class="label">今日の読書時間 <span class="chip">リアルタイム</span></span>
+                <span id="liveToday" class="value mono" aria-live="polite">0:00:00</span>
+              </div>
+              <div class="stat stat-primary">
+                <span class="label">総読書時間 <span class="chip">リアルタイム</span></span>
+                <span id="liveTotal" class="value mono" aria-live="polite">0:00:00</span>
+              </div>
+            </div>
+            <div class="stats stats-secondary">
+              <div class="stat stat-compact">
+                <span class="label">今月の合計</span>
+                <span id="liveMonthTotal" class="value mono" aria-live="polite">0:00:00</span>
+              </div>
+              <div class="stat stat-compact">
+                <span class="label">1日平均</span>
+                <span id="liveMonthAvg" class="value mono" aria-live="polite">0:00:00</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Recent works -->
+          <div class="panel home-panel recent-works-panel">
+            <h2>最近読んだ作品</h2>
+            <div id="recentWorks" class="grid-works">
+              <div class="empty truncate-1" title="まだ記録がありません">まだ記録がありません</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Trend -->
+        <div class="panel home-trend">
+          <h2>今月の読書推移</h2>
+          <div id="monthTrendChart" class="chart-container" aria-label="今月の読書時間の推移グラフ" role="img" aria-describedby="chart-desc-id">
+            <!-- JSでCanvas挿入。空時はフォールバック -->
+          </div>
+          <div id="chart-desc-id" class="sr-only">グラフの詳細記述（JS生成）</div>
+        </div>
+      </section>
+
+      <!-- Library -->
+      <section id="view-library" class="view hidden" role="tabpanel" aria-labelledby="tab-library">
+        <div class="panel">
+          <h2>ライブラリ（作品ナビ）</h2>
+
+          <div class="actions actions-bar">
+            <input id="filterText" class="input" type="search" placeholder="作品タイトルで検索" aria-label="作品検索" />
+            <select id="sortLibrary" aria-label="並び替え">
+              <option value="recent">最近読んだ順</option>
+              <option value="total">累計時間の多い順</option>
+              <option value="title">タイトル順</option>
+            </select>
+          </div>
+
+          <div id="libraryShelf" class="shelf">
+            <div class="empty truncate-1" title="表示できる作品がありません">表示できる作品がありません</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Work -->
+      <section id="view-work" class="view hidden" role="tabpanel" aria-label="作品ページ">
+        <div class="panel">
+          <div class="actions actions-bar work-summary">
+            <div class="work-header">
+              <h2 id="workPageTitle" class="work-title truncate-1" title="作品ページ">作品ページ</h2>
+              <div id="workMeta" class="work-meta mono truncate-1"></div>
+            </div>
+            <div class="work-actions">
+              <button id="backToLibrary" class="ghost small" aria-label="ライブラリに戻る" title="ライブラリに戻る">← ライブラリに戻る</button>
+            </div>
+          </div>
+
+          <div class="work-page-stats">
+            <div id="workInnerQuickA" class="stat"><span class="label">今日</span><span class="value mono">0:00:00</span></div>
+            <div id="workInnerQuickB" class="stat"><span class="label">累計</span><span class="value mono">0:00:00</span></div>
+          </div>
+
+          <div class="panel">
+            <h3>エピソード一覧</h3>
+            <div id="workEpisodes" class="episodes"></div>
+          </div>
+
+          <div class="panel">
+            <h3>作品内統計</h3>
+            <div id="workInnerStats" class="cards"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Settings -->
+      <section id="view-settings" class="view hidden" role="tabpanel" aria-labelledby="tab-settings">
+        <div class="panel">
+          <h2>テーマ設定</h2>
+          <div class="theme-row">
+            <div class="segmented" role="radiogroup" aria-label="テーマ">
+              <input type="radio" id="theme-system" name="theme" value="system" checked />
+              <label for="theme-system">システム</label>
+              <input type="radio" id="theme-light" name="theme" value="light" />
+              <label for="theme-light">ライト</label>
+              <input type="radio" id="theme-dark" name="theme" value="dark" />
+              <label for="theme-dark">ダーク</label>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>サイト有効設定</h2>
+          <div id="siteToggles" class="actions"></div>
+        </div>
+
+        <div class="panel">
+          <h2>データ管理</h2>
+          <div class="actions actions-bar actions-right">
+            <button id="resetToday" class="secondary" aria-label="今日の確定記録をリセット" title="今日の確定記録をリセット">今日の確定記録をリセット</button>
+            <button id="resetAll" class="danger" aria-label="確定記録を全削除" title="確定記録を全削除">ログを全削除</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="options.js"></script>
+</body>
+</html>

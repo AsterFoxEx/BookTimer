@@ -1,0 +1,760 @@
+/* =========================================================
+   options.css — ブックタイマー 全体設計思想:
+   - モダン・ミニマリスト: クリーンなレイアウト、gradient/sheenで微妙な深み。トークン駆動で一貫性確保。
+   - レスポンシブ優先: PC=グリッド中心（同高保証）、Mobile=スタック/wrap。min-width:0徹底でオーバーフロー防衛。
+   - アクセシビリティ: Focus-visible, ARIA対応、sr-only。Reduced-motion尊重。
+   - インタラクション: 軽いtransition（ease-1）、hover=微lift/shadow（位置変えず）。
+   - Library: コンパクトaccordion。Metaをwrap対応でレスポンシブ化（flex-wrap + ellipsis）。Actionsをinline-flexで均等。
+   - Workページ再設計（レスポンシブ強化）: Summaryをflex-wrap対応のcompact rowに。Statsをresponsive grid/flexに。Episodesをcard-list風に（mobile stack）。Inner statsをmetric-gridに（mobile 1col）。はみ出し防衛: min-width:0, overflow:hidden, clamp() for fonts/sizes。
+   - 全体安定: Contain/paint/layoutで局所化。Overscroll/scrollbar-gutterでスムーズ。
+========================================================= */
+
+/* ===========================
+   Design tokens (拡張: Library/Work専用トークン追加 + レスポンシブ強化)
+=========================== */
+:root{
+  --brand-50:#eff6ff; --brand-100:#dbeafe; --brand-200:#bfdbfe; --brand-300:#93c5fd;
+  --brand-400:#60a5fa; --brand-500:#3b82f6; --brand-600:#2563eb; --brand-700:#1d4ed8; --brand-800:#1e40af; --brand-900:#1e3a8a;
+  --danger-500:#ef4444; --danger-600:#dc2626;
+
+  --bg:#f8fafc; --bg-soft:#eef2f7; --surface:#ffffff; --surface-2:#fafafa;
+  --text:#0f172a; --muted:#66738a; --border:#e5e7eb;
+
+  --shadow-tone: color-mix(in oklab, var(--text) 8%, transparent);
+  --shadow-0: 0 0 1px color-mix(in oklab, var(--shadow-tone) 26%, transparent);
+  --shadow-1: 0 1px 2px color-mix(in oklab, var(--shadow-tone) 45%, transparent);
+  --shadow-2: 0 6px 18px color-mix(in oklab, var(--shadow-tone) 35%, transparent);
+
+  --container-s: 760px; --container-m: 980px; --container-l: 1100px;
+  --control-h: 44px; --control-px: 14px;
+
+  --radius-s: 10px; --radius-m: 14px; --radius-l: 18px;
+
+  --space-1: 4px; --space-2: 6px; --space-3: 10px; --space-4: 14px; --space-5: 18px; --space-6: 22px; --space-8: 30px;
+
+  --font-xs: 12px; --font-s: 14px; --font-m: 16px; --font-l: 18px; --font-xl: 22px;
+  --font-detail: 15px;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+
+  --sheen-surface: linear-gradient(180deg, color-mix(in oklab, var(--surface) 96%, transparent), var(--surface));
+  --sheen-soft: linear-gradient(180deg, color-mix(in oklab, var(--surface-2) 90%, transparent), var(--surface-2));
+
+  --topbar-h: 64px;
+
+  --panel-gap: 22px; --tab-label-ch: 14ch;
+
+  /* 最近読んだ作品：行高（PC/スマホ）とボタンサイズ */
+  --row-h-pc: 140px;
+  --row-h-mo: 110px;
+  --card-btn-h: 32px; --card-btn-px: 10px; --card-btn-minw: 92px;
+
+  /* Motion tokens */
+  --ease-1: cubic-bezier(.2,.8,.2,1);
+  --dur-fast: .08s; --dur-std: .2s;
+
+  /* Shelf / Episode (Library: コンパクト化) */
+  --gap-episode: 12px;
+  --accordion-padding: 16px;
+  --shelf-row-h-pc: 160px;
+  --shelf-row-h-mo: 120px;
+  --episode-card-h: 120px;
+
+  /* Library専用 */
+  --meta-item-gap: 6px;
+  --meta-item-minw: 50px;
+  --lib-actions-gap: 6px;
+  --lib-meta-maxw: 40%;
+
+  /* Work再設計専用 (レスポンシブ強化: Mobile clamp/sizes) */
+  --work-summary-gap: 12px;
+  --work-stat-gap: 8px;
+  --work-episode-gap: 8px;
+  --work-metric-col: repeat(auto-fit, minmax(150px, 1fr));
+  --work-title-clamp: clamp(16px, 4vw, 20px); /* Mobile smaller */
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0b0f15; --bg-soft:#0c121a; --surface:#0f1722; --surface-2:#0c121a;
+    --text:#e5e7eb; --muted:#9aa4b2; --border:#1f2b3a;
+    --shadow-tone: color-mix(in oklab, #000 30%, var(--text) 12%);
+    --shadow-0: 0 0 1px color-mix(in oklab, var(--shadow-tone) 30%, transparent);
+    --shadow-1: 0 1px 2px color-mix(in oklab, var(--shadow-tone) 55%, transparent);
+    --shadow-2: 0 6px 22px color-mix(in oklab, var(--shadow-tone) 40%, transparent);
+    --sheen-surface: linear-gradient(180deg, color-mix(in oklab, var(--brand-800) 8%, var(--surface)), var(--surface));
+    --sheen-soft: linear-gradient(180deg, color-mix(in oklab, var(--brand-700) 10%, var(--surface-2)), var(--surface-2));
+  }
+}
+html[data-theme="light"]{
+  --bg:#f8fafc; --bg-soft:#eef2f7; --surface:#ffffff; --surface-2:#fafafa;
+  --text:#0f172a; --muted:#66738a; --border:#e5e7eb;
+  --sheen-surface: linear-gradient(180deg, color-mix(in oklab, var(--surface) 96%, transparent), var(--surface));
+  --sheen-soft: linear-gradient(180deg, color-mix(in oklab, var(--surface-2) 90%, transparent), var(--surface-2));
+}
+html[data-theme="dark"]{
+  --bg:#0b0f15; --bg-soft:#0c121a; --surface:#0f1722; --surface-2:#0c121a;
+  --text:#e5e7eb; --muted:#9aa4b2; --border:#1f2b3a;
+  --sheen-surface: linear-gradient(180deg, color-mix(in oklab, var(--brand-800) 8%, var(--surface)), var(--surface));
+  --sheen-soft: linear-gradient(180deg, color-mix(in oklab, var(--brand-700) 10%, var(--surface-2)), var(--surface-2));
+}
+
+/* ===========================
+   Reset / base
+=========================== */
+*{ box-sizing: border-box; }
+html, body{
+  margin:0; padding:0; background: var(--bg); color:var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Noto Sans JP", "メイリオ", Meiryo, "Helvetica Neue", Arial;
+  font-size: var(--font-s); line-height: 1.6;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--muted) 35%, transparent) transparent;
+  overflow-x: clip;
+}
+img, svg, video, canvas, audio, iframe, embed, object{ max-width: 100%; height: auto; }
+.mono{ font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.hidden{ display: none !important; }
+.truncate-1{ display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
+
+/* Focus */
+:focus-visible{
+  outline:none;
+  box-shadow:
+    0 0 0 3px color-mix(in oklab, var(--brand-400) 55%, transparent),
+    0 0 0 7px color-mix(in oklab, var(--brand-400) 18%, transparent);
+  border-radius:12px;
+}
+
+/* Prevent overflow issues in flex/grid children */
+.container, .views, .panel, .grid, .cards, .lib-summary, .work-page-stats, .actions, .toolbar, #view-work .work-summary, #view-work .work-header, #view-work .work-meta { min-width: 0; overflow-x: hidden; }
+.actions > *, .lib-summary > *, .work-page-stats > *, .toolbar > *, #view-work .work-actions > * { min-width: 0; }
+
+/* Container */
+.container{ width: 100%; margin-inline: auto; padding-inline: var(--space-5); max-width: var(--container-m); overflow-x: hidden; }
+@media (min-width: 1320px){ .container{ max-width: var(--container-l); } }
+@media (max-width: 840px){ .container{ max-width: var(--container-s); padding-inline: var(--space-3); } }
+
+/* ===========================
+   Topbar / Toolbar
+=========================== */
+.topbar{
+  position: sticky; top: 0; z-index: 40;
+  background: var(--sheen-surface);
+  border-bottom: 1px solid var(--border);
+  backdrop-filter: saturate(1.05) blur(8px);
+}
+.appbar{
+  min-height: var(--topbar-h);
+  display:grid; gap: var(--space-3);
+  grid-template-columns: 1fr;
+  grid-template-areas: "brand" "tabs";
+  align-items:center; padding-block: var(--space-3);
+}
+@media (min-width: 840px){
+  .appbar{ grid-template-columns: auto 1fr; grid-template-areas: "brand tabs"; gap: var(--space-4); }
+}
+.brand{
+  grid-area: brand; display:flex; align-items:center; gap: var(--space-3);
+  font-weight: 800; letter-spacing:.2px; font-size: var(--font-l); white-space: nowrap; min-width: 0;
+}
+.brand .logo{
+  inline-size: 28px; block-size: 28px; border-radius: 10px;
+  background: linear-gradient(135deg, var(--brand-500), var(--brand-700));
+  display:grid; place-items:center; color: white; box-shadow: var(--shadow-2);
+  font-weight: 900; font-size: 14px;
+}
+.toolbar{
+  grid-area: tabs;
+  display:flex; gap: var(--space-2); overflow-x:auto;
+  padding:6px; border:1px solid var(--border);
+  background: color-mix(in oklab, var(--surface) 88%, transparent);
+  border-radius: 14px; box-shadow: var(--shadow-0);
+  overscroll-behavior-x: contain;
+  scrollbar-gutter: stable;
+}
+.toolbar .tab{
+  --bg-tab: transparent; --fg-tab: var(--muted);
+  display:inline-flex; align-items:center; justify-content:center; gap: 8px; padding: 10px 14px;
+  border-radius: 12px; border: 1px solid transparent; background: var(--bg-tab); color: var(--fg-tab);
+  cursor:pointer; user-select:none;
+  transition: background var(--dur-std) var(--ease-1), color var(--dur-std) var(--ease-1), border-color var(--dur-std) var(--ease-1), transform var(--dur-fast) var(--ease-1);
+  white-space: nowrap; flex: 1 1 auto; max-width: 100%;
+}
+.tab .icon{ inline-size: 18px; block-size: 18px; fill: currentColor; }
+.tab .label{ font-weight: 700; max-width: var(--tab-label-ch); }
+.toolbar .tab:hover{ background: color-mix(in oklab, var(--brand-100) 35%, transparent); color: var(--text); }
+.toolbar .tab:active{ transform: translateY(1px); }
+.toolbar .tab.active, .toolbar .tab[aria-selected="true"]{
+  border-color: color-mix(in oklab, var(--brand-300) 55%, transparent);
+  color: color-mix(in oklab, var(--brand-800) 80%, var(--text));
+  background: linear-gradient(180deg, color-mix(in oklab, var(--brand-100) 75%, transparent), transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--brand-300) 32%, transparent);
+}
+@media (max-width: 599px){
+  .toolbar{ justify-content: space-between; }
+  .toolbar .tab{ padding:0; width:54px; height:54px; border-radius:12px; }
+  .toolbar .tab .label{ display:none; }
+  .tab .icon{ inline-size:24px; block-size:24px; }
+}
+
+/* ===========================
+   Main / panels
+=========================== */
+.main{ padding-block: var(--space-5); }
+.views{ display:grid; gap: var(--space-5); overflow-x: hidden; }
+.panel{
+  background: var(--sheen-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-l);
+  padding: var(--space-5);
+  box-shadow: var(--shadow-1);
+  display:flex; flex-direction:column; gap: var(--space-4);
+}
+.panel + .panel{ margin-top: var(--panel-gap); }
+.home-primary .panel + .panel{ margin-top: 0; }
+.panel h2{ margin:0; font-size: clamp(16px, 1.6vw, var(--font-l)); display:flex; align-items:center; gap: 10px; min-width: 0; }
+.panel h2 .chip{
+  font-size: var(--font-xs); padding: 2px 8px; border-radius: 999px;
+  background: color-mix(in oklab, var(--brand-100) 60%, transparent);
+  color: var(--brand-700);
+  border: 1px solid color-mix(in oklab, var(--brand-200) 50%, transparent);
+}
+.panel h3 { margin: 0; font-size: var(--font-l); font-weight: 700; color: var(--text); line-height: 1.4; }
+
+/* ===========================
+   Home layout（サマリ×最近×グラフ）
+=========================== */
+#view-home{ display: grid; gap: var(--space-5); }
+
+/* PC: 2カラム。同一行の高さを 45vh に固定して左右同高を“親で”保証 */
+.home-primary{
+  display:grid; gap: var(--space-5);
+  grid-template-columns: 1fr 1fr;
+  grid-auto-rows: 45vh;    /* ←決定打：行高を固定 */
+  align-items: stretch;    /* 子は行高に合わせて伸びる */
+}
+/* Mobile: 1カラム（縦積みなら同高不要）。行高は内容に委ねる */
+@media (max-width: 959px){
+  .home-primary{
+    grid-template-columns: 1fr;
+    grid-auto-rows: auto;
+    grid-template-rows: auto auto;
+  }
+}
+
+/* 子要素：行高を100%で受け取る＋防御設計 */
+.home-primary > .home-panel{
+  min-width: 0; min-height: 0;
+  block-size: 100%;     /* ←親の行高（45vh）を受ける鍵 */
+  display: flex; flex-direction: column;
+}
+
+/* Summary: 基準面。内部スクロールは禁止（内容は詰めて収める） */
+.summary-panel{
+  overflow: clip;       /* 内部スクロール禁止 */
+  contain: content;     /* レイアウト波及を局所化 */
+}
+/* サマリ内部：コンパクトに微調整（詰める方向） */
+.summary-panel .stats-emphasized{ gap: var(--space-2); }
+.summary-panel .stat .value{ font-size: var(--font-xl); line-height: 1.4; }
+.summary-panel .stats-secondary{
+  display:grid; grid-template-columns: 1fr 1fr; gap: var(--space-2);
+}
+.summary-panel .stats-secondary .stat .value{
+  font-size: var(--font-l); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.summary-panel .stat{ padding: var(--space-3); gap: var(--space-2); }
+
+/* Recent: 追従面。パネルは固定せず、内部のみ縦スクロール */
+.recent-works-panel{
+  padding: var(--space-5);
+  gap: var(--space-4);
+  overflow: hidden;     /* パネル自体はスクロールしない */
+  min-height: 0;        /* 子の内部スクロールを許可（重要） */
+  contain: content;
+}
+
+/* 内側グリッド：親の残り高さで縦スクロール。横は完全禁止。 */
+.grid-works{
+  flex: 1 1 auto;       /* 残り高さを満たす */
+  min-height: 0;        /* 内部スクロール阻害しない */
+  display: grid;
+  gap: var(--space-4);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: var(--row-h-pc);  /* 行高＝カード高 */
+  padding: var(--space-2);
+  box-sizing: border-box;
+  overflow-y: auto;     /* 縦のみ */
+  overflow-x: hidden;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+  contain: content;
+  max-inline-size: 100%;
+}
+@media (max-width: 959px){
+  .grid-works{
+    grid-template-columns: 1fr;
+    grid-auto-rows: var(--row-h-mo);
+    gap: var(--space-3);
+  }
+}
+
+/* カード：高さ＝行高（100%）。hoverは影のみ（位置を変えない） */
+.grid-works .card{
+  height: 100%; width: 100%;
+  min-width: 0;
+  display:flex; flex-direction:column; gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--sheen-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  box-shadow: var(--shadow-1);
+  transition: box-shadow var(--dur-std) var(--ease-1), border-color var(--dur-std) var(--ease-1), background var(--dur-std) var(--ease-1);
+  overflow: hidden;
+  position: relative;
+  contain: content;
+}
+.grid-works .card:hover{
+  z-index: 1;
+  box-shadow: var(--shadow-2);
+  border-color: color-mix(in oklab, var(--brand-200) 55%, transparent);
+}
+
+/* タイトル・メタ：横オーバーフロー対策 */
+.grid-works .card .title{ font-weight: 700; font-size: var(--font-m); line-height: 1.2; min-width: 0; }
+.grid-works .card .title .text{
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.grid-works .card .meta{
+  color: var(--muted); font-size: var(--font-xs); line-height: 1.2;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
+
+/* アクション（下端寄せ＋均等幅） */
+.grid-works .card .actions{
+  margin-top: auto;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-2);
+  align-items: stretch;
+  min-width: 0;
+  overflow-x: hidden;
+}
+.grid-works .card .actions button{
+  height: var(--card-btn-h);
+  padding: 0 var(--card-btn-px);
+  font-size: var(--font-xs); font-weight: 700;
+  min-width: 0; max-width: 100%;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  border-radius: var(--radius-s);
+  flex: 0 1 auto;
+}
+.grid-works .card .actions button.primary{
+  background: linear-gradient(180deg, var(--brand-500), var(--brand-600));
+  color:#fff; border-color: var(--brand-600); box-shadow: var(--shadow-1);
+}
+.grid-works .card .actions button.secondary{
+  background: color-mix(in oklab, var(--brand-50) 50%, var(--surface));
+  color: var(--brand-800);
+  border-color: color-mix(in oklab, var(--brand-200) 40%, transparent);
+}
+.grid-works .card .actions button.ghost{
+  background: var(--surface-2); color: var(--muted); border: 1px dashed var(--border); box-shadow: none;
+}
+
+/* Mobile：多ボタン時のみ横スクロール許容 */
+@media (max-width: 599px){
+  :root{ --card-btn-h: 40px; --card-btn-px: 12px; }
+  .grid-works .card .actions{
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(120px, 1fr);
+    overflow-x: auto; -webkit-overflow-scrolling: touch;
+    justify-content: start;
+    scrollbar-gutter: stable;
+  }
+}
+
+/* 空状態（全体 span） */
+.grid-works .empty{
+  grid-column: 1 / -1;
+  display:grid; place-items:center;
+  padding: var(--space-4);
+  font-size: var(--font-m);
+  background: var(--surface-2);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-m);
+}
+
+/* ===========================
+   Stats blocks
+=========================== */
+.stats{ display:grid; gap: var(--space-4); }
+.stat{
+  display:flex; justify-content:space-between; align-items:center; gap: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-m);
+  background: var(--sheen-soft); border: 1px solid var(--border);
+  box-shadow: var(--shadow-0);
+}
+.stat .label{ color: var(--muted); font-weight: 700; min-width: 0; flex: 1; font-size: var(--font-detail); }
+.stat .value{ font-weight: 900; font-size: clamp(18px, 1.6vw, var(--font-xl)); min-width: 0; white-space: nowrap; line-height: 1.1; }
+.stat-primary .value{ color: var(--brand-700); }
+
+/* ===========================
+   Controls
+=========================== */
+.actions{ display:flex; flex-wrap:wrap; gap: var(--space-3); align-items:center; min-width: 0; }
+.actions-bar{ background: var(--sheen-soft); padding: var(--space-4); border-radius: var(--radius-m); box-shadow: var(--shadow-0); overflow-x: hidden; }
+.actions-right{ justify-content: flex-end; }
+.input, select{
+  height: var(--control-h);
+  padding: 0 var(--control-px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--surface); color: var(--text);
+  font-size: var(--font-m);
+  box-shadow: 0 1px 0 color-mix(in oklab, var(--shadow-tone) 30%, transparent) inset;
+  accent-color: var(--brand-600);
+  min-width: 180px;
+}
+.input{ width: clamp(180px, 30vw, 360px); min-width: 0; }
+select{
+  padding-right: calc(var(--control-px) + 18px);
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 18px) calc(50% - 2px), calc(100% - 12px) calc(50% - 2px);
+  background-size: 6px 6px, 6px 6px; background-repeat: no-repeat;
+}
+
+/* Buttons (Enhance: Shine effect + refined gradients) */
+button, .btn{
+  height: var(--control-h);
+  padding: 0 var(--control-px);
+  font-size: var(--font-m); font-weight: 800;
+  border-radius: var(--radius-s);
+  border: 1px solid var(--border);
+  cursor:pointer; background: var(--surface); color: var(--text);
+  box-shadow: var(--shadow-1);
+  transition: transform var(--dur-fast) var(--ease-1), background var(--dur-std) var(--ease-1), border-color var(--dur-std) var(--ease-1), color var(--dur-std) var(--ease-1), box-shadow var(--dur-std) var(--ease-1);
+  min-width: 0; max-width: 100%;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  flex: 1 1 auto;
+  position: relative; overflow: hidden;
+}
+button::before, .btn::before {
+  content: ''; position: absolute; top: 0; left: -100%; width: 100%; height: 100%;
+  background: linear-gradient(90deg, transparent, color-mix(in oklab, var(--brand-100) 20%, transparent), transparent);
+  transition: left var(--dur-std) var(--ease-1);
+}
+button:hover::before, .btn:hover::before { left: 100%; }
+button:hover{ background: color-mix(in oklab, var(--bg-soft) 55%, transparent); box-shadow: var(--shadow-2); }
+button:active{ transform: translateY(1px); }
+button.secondary{
+  background: linear-gradient(180deg, color-mix(in oklab, var(--brand-50) 60%, var(--surface)), var(--surface));
+  color: var(--brand-800); border-color: color-mix(in oklab, var(--brand-200) 50%, transparent);
+}
+html[data-theme="dark"] button.secondary{ background: linear-gradient(180deg, color-mix(in oklab, var(--surface-2) 95%, var(--brand-800) 10%), var(--surface-2)); color: color-mix(in oklab, var(--brand-50) 85%, var(--text)); border-color: color-mix(in oklab, var(--brand-600) 30%, var(--border)); }
+button.primary{ background: linear-gradient(135deg, var(--brand-500), var(--brand-600)); color:#fff; border-color: var(--brand-600); box-shadow: var(--shadow-2); }
+button.primary:hover { background: linear-gradient(135deg, var(--brand-600), var(--brand-700)); box-shadow: 0 4px 14px color-mix(in oklab, var(--brand-600) 40%, transparent); }
+button.danger{ background: linear-gradient(135deg, var(--danger-500), var(--danger-600)); color:#fff; border-color: var(--danger-600); box-shadow: var(--shadow-2); }
+button.ghost{ background: var(--surface-2); color: var(--muted); border: 1px dashed var(--border); box-shadow: none; }
+button.ghost:hover { background: color-mix(in oklab, var(--brand-50) 30%, var(--surface-2)); border-color: color-mix(in oklab, var(--brand-300) 40%, var(--border)); }
+button.small{ height: 40px; font-weight: 700; font-size: var(--font-detail); padding: 0 12px; }
+
+/* ===========================
+   Grids / cards（汎用）
+=========================== */
+.grid{ display:grid; gap: var(--space-4); grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.cards{ display:grid; gap: var(--space-4); grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.card{
+  background: var(--sheen-surface); border: 1px solid var(--border); border-radius: var(--radius-m);
+  padding: var(--space-4); display:grid; gap: var(--space-3);
+  transition: transform var(--dur-fast) var(--ease-1), box-shadow var(--dur-std) var(--ease-1), border-color var(--dur-std) var(--ease-1);
+  box-shadow: var(--shadow-1);
+}
+.card:hover{ transform: translateY(-1px); box-shadow: var(--shadow-2); border-color: color-mix(in oklab, var(--brand-200) 45%, transparent); }
+.card .title{ font-weight: 800; font-size: var(--font-l); line-height: 1.3; }
+.card .meta{ color: var(--muted); font-size: var(--font-detail); line-height: 1.5; }
+
+/* ===========================
+   Library shelf (コンパクト・レスポンシブ俯瞰)
+   - 全体: Flex column for vertical stack. Details as accordion with reduced padding/gap.
+   - Summary: Flex (title flex1, meta wrap, actions fixed-right). Meta: Flex-wrap with ellipsis per item.
+   - Episodes: Tight list with inline-flex items, auto-height scroll.
+   - Mobile: Stack everything vertically, meta full-width wrap.
+=========================== */
+.shelf{
+  display: flex; flex-direction: column; gap: var(--space-3);
+  overflow-x: hidden;
+}
+.shelf details{
+  border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
+  border-radius: var(--radius-m);
+  background: var(--sheen-surface);
+  transition: all var(--dur-std) var(--ease-1);
+  box-shadow: var(--shadow-0);
+  overflow: hidden; contain: content;
+}
+.shelf details[open]{
+  border-color: var(--brand-300); box-shadow: var(--shadow-1);
+  background: color-mix(in oklab, var(--surface) 98%, var(--brand-50));
+}
+.shelf summary{
+  display: flex;
+  align-items: center; justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--accordion-padding);
+  cursor: pointer; user-select: none;
+  transition: background var(--dur-std) var(--ease-1);
+  list-style: none; font-size: var(--font-l); line-height: 1.4;
+  min-width: 0;
+}
+.shelf summary:hover{ background: color-mix(in oklab, var(--brand-100) 40%, transparent); }
+.shelf summary:focus-visible{ outline: none; box-shadow: 0 0 0 3px color-mix(in oklab, var(--brand-400) 55%, transparent); border-radius: var(--radius-m); }
+.shelf summary::-webkit-details-marker { display: none; }
+
+/* Lib-summary: Flex with title grow, meta wrap, actions shrink */
+.shelf .lib-summary{
+  display: flex; align-items: center; gap: var(--space-3); flex: 1; min-width: 0;
+}
+.shelf .lib-title{
+  flex: 1; font-weight: 900; font-size: var(--font-xl); line-height: 1.2;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  min-width: 0;
+}
+.shelf .lib-meta{
+  display: flex; flex-wrap: wrap; gap: var(--meta-item-gap); align-items: center;
+  color: var(--muted); font-size: var(--font-xs); min-width: 0;
+  max-width: var(--lib-meta-maxw);
+  overflow: hidden;
+}
+.shelf .lib-meta .meta-item{
+  display: flex; gap: var(--space-1); align-items: center;
+  background: var(--surface-2); padding: 3px 6px;
+  border-radius: 999px; border: 1px solid color-mix(in oklab, var(--border) 50%, transparent);
+  white-space: nowrap; min-width: var(--meta-item-minw); flex-shrink: 0;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.shelf .lib-meta .label{ font-weight: 700; font-size: var(--font-xs); flex-shrink: 0; }
+.shelf .lib-meta .value{ font-weight: 900; font-size: var(--font-xs); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.shelf .lib-actions{ 
+  display: flex; gap: var(--lib-actions-gap); align-items: center;
+  min-width: auto; flex-shrink: 0;
+}
+.shelf .lib-actions button { 
+  padding: 0 8px; font-size: var(--font-xs); height: 28px;
+  white-space: nowrap; min-width: auto;
+}
+
+/* Episodes: Compact list */
+.shelf .episodes, #workEpisodes.episodes{
+  padding: var(--space-3) var(--accordion-padding);
+  border-top: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: var(--work-episode-gap);
+  overflow-x: hidden; overflow-y: auto;
+  max-height: min(50vh, 400px);
+  overscroll-behavior-y: contain; scrollbar-gutter: stable; contain: content;
+}
+.shelf .episodes ul.episode-list, #workEpisodes.episodes ul.episode-list{ list-style: none; margin: 0; padding: 0; }
+.shelf .episode, #workEpisodes .episode{
+  display: flex; align-items: center; gap: var(--gap-episode);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid color-mix(in oklab, var(--border) 30%, transparent);
+  font-size: var(--font-detail); line-height: 1.5;
+  transition: background var(--dur-std) var(--ease-1);
+  min-width: 0;
+}
+.shelf .episode:last-child, #workEpisodes .episode:last-child{ border-bottom: none; }
+.shelf .episode:hover, #workEpisodes .episode:hover{ background: color-mix(in oklab, var(--brand-100) 30%, transparent); }
+.shelf .episode a, #workEpisodes .episode a{
+  flex: 1; font-weight: 600; color: var(--brand-600); text-decoration: none;
+  display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden;
+}
+.shelf .episode a:hover, #workEpisodes .episode a:hover{ text-decoration: underline; }
+.shelf .episode .mono.muted, #workEpisodes .episode .mono.muted{
+  color: var(--muted); font-size: var(--font-xs);
+  white-space: nowrap; display: flex; gap: var(--space-2);
+  flex-shrink: 0;
+}
+.shelf .empty{
+  padding: var(--space-4); text-align: center; font-size: var(--font-m);
+  background: var(--surface-2); border: 1px dashed var(--border); border-radius: var(--radius-s);
+}
+
+/* Mobile Library: Full wrap/stack */
+@media (max-width: 959px){
+  .shelf summary{ flex-direction: column; align-items: stretch; gap: var(--space-2); padding: var(--space-3); }
+  .shelf .lib-summary{ flex-direction: column; align-items: stretch; gap: var(--space-2); }
+  .shelf .lib-meta{ max-width: none; justify-content: flex-start; flex-wrap: wrap; }
+  .shelf .lib-actions{ justify-content: center; margin-top: var(--space-1); }
+}
+
+/* ===========================
+   Work page (再設計: Compact integrated layout + レスポンシブ強化)
+   - Summary: Flex-wrap row with min-width:0, clamp fonts, overflow control for no overflow.
+   - Quick stats: Responsive flex/grid, horizontal scroll only if needed, center on mobile.
+   - Episodes: Reuse shelf, with mobile full-width.
+   - Inner stats: Metric grid, 1col on mobile, clamp sizes.
+   - Mobile: Full vertical stack, reduced gaps, ellipsis everywhere.
+=========================== */
+#view-work .panel{ gap: var(--space-3); }
+
+/* Work Summary: Compact flex header with wrap */
+#view-work .work-summary{
+  display: flex; flex-wrap: wrap; align-items: flex-start; /* flex-start for mobile stack */
+  justify-content: space-between; gap: var(--work-summary-gap);
+  padding: var(--space-4);
+  background: var(--sheen-soft); border-radius: var(--radius-m); box-shadow: var(--shadow-0);
+  overflow-x: hidden; contain: content; min-width: 0;
+}
+#view-work .work-header{
+  display: flex; flex: 1 1 auto; align-items: center; gap: var(--space-3); min-width: 0;
+}
+#view-work .work-title{
+  flex: 1; font-size: var(--work-title-clamp); font-weight: 900; line-height: 1.2;
+  display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden;
+  min-width: 0; white-space: nowrap; /* Prevent wrap issues */
+}
+#view-work .work-meta{
+  display: flex; gap: var(--space-1); color: var(--muted); font-size: var(--font-xs);
+  white-space: nowrap; min-width: 0; flex-shrink: 0; overflow: hidden;
+  flex-wrap: nowrap; /* Keep inline on PC, wrap on mobile via parent */
+}
+#view-work .work-actions{
+  display: flex; gap: var(--space-2); align-items: center; flex-shrink: 0;
+  min-width: auto; flex-wrap: wrap; /* Allow wrap */
+}
+#view-work .work-actions button{ 
+  min-width: auto; padding: 0 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* Work Page Stats: Responsive flex with scroll defense */
+#view-work .work-page-stats{
+  display: flex; gap: var(--work-stat-gap); align-items: center; justify-content: flex-start;
+  padding: var(--space-3); background: var(--surface-2); border-radius: var(--radius-s);
+  overflow-x: auto; scrollbar-gutter: stable; /* Scroll if overflow */
+  min-width: 0;
+}
+#view-work .work-page-stats .stat{
+  flex: 0 1 auto; min-width: clamp(100px, 25vw, 150px); /* Responsive min */
+  padding: var(--space-2); justify-content: center; text-align: center;
+  white-space: nowrap; overflow: hidden;
+}
+#view-work .stat .label{ 
+  font-size: clamp(11px, 3vw, var(--font-xs)); /* Clamp for mobile */
+}
+#view-work .stat .value{ 
+  font-size: clamp(14px, 4vw, var(--font-m)); line-height: 1.2; 
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* Work Inner Stats: Metric grid */
+#workInnerStats{
+  display: grid; grid-template-columns: var(--work-metric-col); gap: var(--space-3);
+}
+#workInnerStats .card{
+  padding: var(--space-3); gap: var(--space-1); text-align: center;
+  background: var(--sheen-soft); border: 1px solid var(--border);
+  min-width: 0;
+}
+#workInnerStats .card .title{ 
+  font-size: clamp(12px, 2.5vw, var(--font-s)); line-height: 1.3; color: var(--muted); 
+  overflow: hidden; text-overflow: ellipsis;
+}
+#workInnerStats .card .meta{ 
+  font-size: clamp(14px, 3.5vw, var(--font-l)); font-weight: 900; color: var(--brand-700); line-height: 1.2; 
+}
+
+/* Mobile Work: Full stack + tight controls */
+@media (max-width: 959px){
+  #view-work .work-summary{ 
+    flex-direction: column; align-items: stretch; padding: var(--space-3); 
+  }
+  #view-work .work-header{ 
+    flex-direction: column; align-items: flex-start; gap: var(--space-2); 
+  }
+  #view-work .work-title{ 
+    -webkit-line-clamp: 2; white-space: normal; /* Allow multi-line on mobile */
+  }
+  #view-work .work-meta{ 
+    flex-wrap: wrap; justify-content: flex-start; white-space: normal; 
+  }
+  #view-work .work-actions{ 
+    justify-content: flex-start; margin-top: var(--space-1); flex-wrap: wrap; 
+    width: 100%; /* Full width on mobile */
+  }
+  #view-work .work-page-stats{ 
+    justify-content: space-around; flex-wrap: wrap; /* Wrap if needed */
+  }
+  #workInnerStats{ 
+    grid-template-columns: 1fr; gap: var(--space-2); 
+  }
+  #workEpisodes .episode{ 
+    flex-direction: column; align-items: flex-start; gap: var(--space-1); 
+    padding: var(--space-3); 
+  }
+  #workEpisodes .episode a{ 
+    flex: none; -webkit-line-clamp: 2; 
+  }
+  #workEpisodes .episode .mono.muted{ 
+    white-space: normal; flex-direction: column; gap: var(--space-1); 
+  }
+}
+
+/* ===========================
+   Toast / Empty
+=========================== */
+.toast{
+  position: fixed; left: 50%; transform: translateX(-50%) translateY(10px) scale(0.98);
+  bottom: var(--space-5);
+  background: var(--sheen-surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius-m); padding: 10px 14px;
+  box-shadow: var(--shadow-2); opacity: 0; pointer-events: none;
+  transition: opacity var(--dur-std) var(--ease-1), transform var(--dur-std) var(--ease-1);
+  z-index: 70;
+  max-width: min(640px, 90vw);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.toast.show{ opacity:1; transform: translateX(-50%) translateY(0) scale(1); }
+.toast.success{ border-color: color-mix(in oklab, var(--brand-300) 60%, transparent); }
+.toast.warn{ border-color: color-mix(in oklab, #f59e0b 40%, var(--border)); }
+.toast.error{ border-color: color-mix(in oklab, var(--danger-600) 60%, var(--border)); }
+
+.empty{
+  padding: 24px; border: 1px dashed var(--border);
+  border-radius: var(--radius-m); text-align: center; color: var(--muted); background: var(--surface-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* ===========================
+   Motion respect
+=========================== */
+@media (prefers-reduced-motion: reduce){
+  *{ transition: none !important; animation: none !important; }
+}
+
+/* ===========================
+   Progressive enhancement
+   Fallbacks for color-mix
+=========================== */
+@supports not (color: color-mix(in oklab, white 10%, black)){
+  .toolbar{ background: var(--surface); }
+  .toolbar .tab:hover{ background: var(--brand-100); }
+  .toolbar .tab.active, .toolbar .tab[aria-selected="true"]{ border-color: var(--brand-300); background: var(--brand-50); }
+  button:hover{ background: var(--bg-soft); }
+  .panel{ background: var(--surface); }
+  .actions-bar{ background: var(--surface-2); }
+  .toast.success{ border-color: var(--brand-300); }
+  .toast.warn{ border-color: #f59e0b; }
+  .toast.error{ border-color: var(--danger-600); }
+  .shelf details[open]{ border-color: var(--brand-300); background: var(--brand-50); }
+  .grid-works .card:hover{ border-color: var(--brand-200); }
+  .shelf .episode:hover, #workEpisodes .episode:hover{ background: var(--brand-50); }
+  button.secondary { background: var(--brand-50); border-color: var(--brand-200); }
+  button.primary:hover { background: var(--brand-600); }
+  button.ghost:hover { background: var(--brand-50); border-color: var(--brand-300); }
+}
+:root {
+  --font-xs: clamp(11px, 0.8vw, 12px);
+  --font-s:  clamp(13px, 1vw, 14px);
+  --font-m:  clamp(15px, 1.2vw, 16px);
+  --font-l:  clamp(17px, 1.6vw, 18px);
+  --font-xl: clamp(20px, 2vw, 22px);
+}

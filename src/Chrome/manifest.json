@@ -1,0 +1,49 @@
+{
+  "manifest_version": 3,
+  "name": "ブックタイマー",
+  "version": "0.1.0",
+  "description": "対応小説サイトでの読書時間を自動計測し、日別・累計・作品別に集計。",
+  "minimum_chrome_version": "116",
+  "action": {
+    "default_title": "ブックタイマー Next",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": [
+    "storage",
+    "tabs",
+    "webNavigation",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://kakuyomu.jp/*",
+    "https://syosetu.org/*",
+    "https://syosetu.com/*",
+    "https://ncode.syosetu.com/*",
+    "https://pixiv.net/*",
+    "https://www.pixiv.net/*",
+    "https://api.syosetu.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://kakuyomu.jp/*",
+        "https://ncode.syosetu.com/*",
+        "https://syosetu.org/*",
+        "https://www.pixiv.net/*",
+        "https://pixiv.net/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  }
+}
