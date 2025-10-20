@@ -21,11 +21,21 @@ Book Timerは原則ローカルで完結する軽量、省機能のFirefox向け
 - 対応サイトを選択可能  
 - ログの全消去  
 - 1日単位の統計消去  
-- 判定方法は Tabs の Title / URL または API を利用  
+- 判定方法は Tabs の Title / URL または API を利用
 
 ## インストール方法
-- 通常通りManifestを選択し、インストールしてください。
 
+### Xpiからインストールする場合
+
+#### Androidの場合
+1. Firefoxの設定に移動し、「Firefoxについて」を選択します。  
+2. Firefoxのロゴを5回程度タップし、開発者メニューを有効化します。  
+3. 「ファイルから拡張機能をインストール」を選択し、ダウンロードした `.xpi` ファイルを指定すれば完了です。  
+
+#### PCの場合
+1. Firefoxで `about:debugging#/runtime/this-firefox` にアクセスします。  
+2. 「Temporary Extensions」から「Load Temporary Add-on」を選択します。  
+3. ダウンロードした `.xpi` ファイルを指定すれば完了です。  
 ## ライセンス
 ライセンスはMitとなります。
 
