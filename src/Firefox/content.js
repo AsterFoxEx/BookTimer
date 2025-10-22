@@ -90,16 +90,6 @@
   });
 
   document.addEventListener("visibilitychange", sendVisibilityHeartbeat);
-  // pixiv特化: 本文divの動的スクロール監視
-  const observer = new MutationObserver(() => {
-    const novelBody = document.querySelector('[data-episode-body], .novel-text, article, [class*="novel"]');  // pixivセレクタ（調整可）
-    if (novelBody && !novelBody.hasAttribute('data-activity-listener')) {
-      novelBody.addEventListener("scroll", onActivity, { passive: true });
-      novelBody.setAttribute('data-activity-listener', 'true');
-      console.log("Content: Attached scroll to novel body");
-    }
-  });
-  observer.observe(document.body, { childList: true, subtree: true });
 
   function cleanup() {
     sendVisibilityHeartbeat();
@@ -109,7 +99,6 @@
       document.removeEventListener(ev, onActivity);
     });
     document.removeEventListener("visibilitychange", sendVisibilityHeartbeat);
-    observer.disconnect();
   }
 
   if (IS_ANDROID) {
