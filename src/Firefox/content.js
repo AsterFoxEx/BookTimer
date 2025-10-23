@@ -1,15 +1,15 @@
 "use strict";
-/* content.js
+/*
+content.js
 - 500ms heartbeat: visibilityState + lastInteraction
 - 操作検知: 500msスロットル、focus/touchstart/click は1秒に1回フォールバック心拍
-- run_at: document_startで早めに注入
-- hashchange/popstate フォールバック（SPA/fragment）
+- run_at: document_startで早めに注入（manifestで設定）
+- hashchange/popstate は background 側 WebNavigation で捕捉済み（ここでは送らない）
 - Android のときだけ beforeunload（PC は pagehide）
-- URL/タイトル送信削除: 絞り込み
 */
 
 (() => {
-  const B = browser; // Firefox は browser が標準
+  const B = (typeof browser !== "undefined") ? browser : chrome;
   const HEARTBEAT_INTERVAL_MS = 500;
   const THROTTLE_MS = 500;
   const FALLBACK_INTERVAL_MS = 1000;
@@ -20,11 +20,10 @@
   let hbTimer = null;
 
   function sendMessageSafe(msg) {
-    console.log("Content: Sending message:", msg); // デバッグログ
     try {
       const p = B?.runtime?.sendMessage?.(msg);
-      if (p && typeof p.then === "function") return p.catch(err => { console.error("Content: Send failed:", err); });
-    } catch (err) { console.error("Content: Send error:", err); }
+      if (p && typeof p.then === "function") return p.catch(() => {});
+    } catch {}
     return Promise.resolve();
   }
 
@@ -36,7 +35,6 @@
 
   function sendVisibilityHeartbeat() {
     const v = getVisibilityState();
-    console.log("Content: Sending heartbeat, visibility:", v); // デバッグログ
     sendMessageSafe({
       type: "heartbeat",
       visibilityState: v,
@@ -48,7 +46,7 @@
     const now = Date.now();
     const type = ev?.type || "unknown";
     const v = getVisibilityState();
-    console.log(`Content: Activity detected: type=${type}, ts=${now}, visibility=${v}`); // デバッグログ
+
     if (now - lastActivity > THROTTLE_MS) {
       lastActivity = now;
       sendMessageSafe({
@@ -75,15 +73,15 @@
 
   const activityEvents = [
     "click", "mousedown", "mouseup",
-    "mousemove", "mouseenter", "mouseleave",  // マウス強化
+    "mousemove", "mouseenter", "mouseleave",
     "touchstart", "touchmove", "touchend", "touchcancel",
     "pointerdown", "pointermove", "pointerup",
     "scroll", "wheel",
     "keydown", "keyup",
-    "input", "focus", "change", "select"  // 追加イベント
+    "input", "focus", "change", "select"
   ];
 
-  // イベントリスナー: window + document全体（captureでpixiv divスクロール捕捉）
+  // window + document に広く張る（capture=trueで深い階層でも拾う）
   activityEvents.forEach(ev => {
     window.addEventListener(ev, onActivity, { passive: true });
     document.addEventListener(ev, onActivity, { passive: true, capture: true });
@@ -108,11 +106,11 @@
   }
 
   function boot() {
-    console.log("=== CONTENT SCRIPT LOADED on", location.href, "==="); // 注入確認
-    console.log("Content: Booting...");
-    sendVisibilityHeartbeat();  // 即時
+    // 即時ハートビートで background に存在を知らせる
+    sendVisibilityHeartbeat();
     setTimeout(sendVisibilityHeartbeat, 100);
     setTimeout(sendVisibilityHeartbeat, 500);
+
     if (document.readyState === "loading") {
       document.addEventListener("DOMContentLoaded", () => {
         requestAnimationFrame(() => {

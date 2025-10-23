@@ -1,5 +1,6 @@
 "use strict";
 
+/* ===== Cross-browser alias ===== */
 const B = (typeof browser !== "undefined") ? browser : chrome;
 
 /* ===== Utils ===== */
@@ -61,7 +62,7 @@ const DEFAULT_SETTINGS = {
   livePushMinGapMs: 500,
   titleStableMs: 500,
   visibilityStabilizeMs: 0,
-  idleHoldMs: 20000,
+  idleHoldMs: 30000,
   idleDiscardMs: 20 * 60 * 1000,
   pendingAbsorbWindowMs: 5000,
   pendingShortTimeoutMs: 15000,
@@ -100,7 +101,7 @@ const DEFAULT_SETTINGS = {
     "awaitCert.promote": true,
     "awaitCert.expire": true,
     "meta.apply": true,
-    "meta.apply.stale": true, // enable to observe stale decisions
+    "meta.apply.stale": true,
     "meta.parse.error": true,
     "title.stable": true,
     "title.promote.block": true,
@@ -271,9 +272,9 @@ function updateTitleStability(tabId, newTitle, now, site) {
     const st = tabState.get(tabId);
     if (!st || st.lastStableTitle !== t) {
       log("title.stable", { tabId, title: t, spanMs: span });
-      titleStableMap.set(tabId, s);
-      return t;
     }
+    titleStableMap.set(tabId, s);
+    return t;
   }
 
   titleStableMap.set(tabId, s);
@@ -300,6 +301,42 @@ function schedulePendingDrop(tabId) {
   const st = tabState.get(tabId); if (!st?.pending) return;
   // actual drop happens via evaluateVisibility/global scan
 }
+
+/* Strict matching to absorb pending only when it belongs to the same content */
+function pendingMatchesCurrent(st) {
+  try {
+    const p = st?.pending; if (!p) return false;
+    const currentUrl = st.urlObserved || st.urlConfirmed || "";
+    if (!currentUrl || !p.url) return false;
+
+    // 1) Normalize and compare URL (ignoring hash, normalized query order)
+    const pk = normalizeUrlForCompare(p.url);
+    const ck = normalizeUrlForCompare(currentUrl);
+    if (pk && ck && pk === ck) return true;
+
+    // 2) Pixiv: id is per-episode
+    const meta = st.meta || {};
+    if (meta.site === SITE.PIXIV && p.pixivId && meta.pixivId && p.pixivId === meta.pixivId) return true;
+
+    // 3) Narou: require full path (ncode + episode) match
+    if (meta.site === SITE.NAROU) {
+      const u1 = new URL(p.url); const u2 = new URL(currentUrl);
+      if (u1.origin === u2.origin && u1.pathname === u2.pathname && u1.search === u2.search) return true;
+    }
+
+    // 4) Fallback: exact textual match on site + work/episode titles
+    if (p.site && meta.site && p.site === meta.site &&
+        p.workTitle && meta.workTitle && p.workTitle === meta.workTitle &&
+        p.episodeTitle && meta.episodeTitle && p.episodeTitle === meta.episodeTitle) {
+      return true;
+    }
+
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 function tryAbsorbPendingOnResume(st, now) {
   if (!st?.pending) return false;
 
@@ -317,6 +354,19 @@ function tryAbsorbPendingOnResume(st, now) {
       ms: st.pending.ms,
       ageMs: age,
       reason: "resume_discard"
+    });
+    st.pending = null;
+    return false;
+  }
+
+  // 吸収は「同一コンテンツ」のときのみ許可
+  if (!pendingMatchesCurrent(st)) {
+    log("pending.drop", {
+      tabId: st.tabId,
+      kind: st.pending.kind,
+      ms: st.pending.ms,
+      ageMs: age,
+      reason: "mismatch_current"
     });
     st.pending = null;
     return false;
@@ -397,11 +447,7 @@ function metaMatchesUrl(st) {
 }
 
 /* ===== Pixiv parsing ===== */
-function stripPixivLeadingTags(rawTitle) {
-  let s = String(rawTitle || "").trim();
-  s = s.replace(/^(\s*#\S+(?:\([^)]+\))?\s*)+/i, "").trim();
-  return s;
-}
+/* Note: remove duplicate definition; keep the stricter unicode-aware version */
 function stripPixivLeadingTags(rawTitle) {
   let s = String(rawTitle || "").trim();
   s = s.replace(/^(\s*#(?!\d+\b)\S+(?:\([^)]+\))?\s*)+/u, "").trim();
@@ -410,24 +456,21 @@ function stripPixivLeadingTags(rawTitle) {
 function parsePixiv(u, rawTitle) {
   const site = SITE.PIXIV;
 
-  // 1) URL gate: 小説本文ページのみ対象
   const pathname = String(u.pathname || "");
   const search = u.searchParams || new URLSearchParams();
   const isNovelContent = /^\/novel\/show\.php$/i.test(pathname) && search.has("id");
   const pixivId = search.get("id") || undefined;
 
   if (!isNovelContent) {
-    // 明確に本文ページではない
     return { isContent: false, cert: "none", site, workTitle: "", episodeTitle: "", author: "", pixivId: undefined };
   }
 
-  // 2) タイトル前処理 & プレースホルダ拒否
   const raw = String(rawTitle || "").trim();
   if (!raw || /^\[pixiv\]/i.test(raw) || /ローディング中/i.test(raw)) {
     return { isContent: true, cert: "url", site, workTitle: "", episodeTitle: "", author: "", pixivId };
   }
 
-  // 3) シリーズ形式（タグ除去前）
+  // Series format: "#1 副題 | 作品名"
   let m = raw.match(/^#(\d+)\s+(.+?)\s*\|\s*(.+?)(?:\s*-\s*.+)?$/u);
   if (m) {
     const epNumber = m[1];
@@ -437,15 +480,13 @@ function parsePixiv(u, rawTitle) {
     return { isContent: true, cert: "title", site, workTitle, episodeTitle, author: "", pixivId };
   }
 
-  // 4) 単発処理：タグ除去 → サフィックス除去 → 抽出
+  // Single: strip tags then suffixes
   let s = raw.replace(/^(\s*#\S+(?:\([^)]+\))?\s*)+/u, "").trim();
-
-  // 「- pixiv」や「- 作者の小説 - pixiv」を後方から落とす
   s = s.replace(/\s*-\s*pixiv\s*$/iu, "")
        .replace(/\s*-\s*[^-]*?の小説\s*-\s*pixiv\s*$/iu, "")
        .trim();
 
-  // 「副題 | 作品」（話数なし前提）
+  // "副題 | 作品"
   m = s.match(/^(?!#\d+\s+)(.+?)\s*\|\s*(.+?)(?:\s*-\s*.+)?$/u);
   if (m) {
     const episodeTitle = m[1].replace(/\u3000/g, " ").replace(/\s+/g, " ").trim();
@@ -453,14 +494,13 @@ function parsePixiv(u, rawTitle) {
     return { isContent: true, cert: "title", site, workTitle, episodeTitle, author: "", pixivId };
   }
 
-  // 「タイトル - 作者の小説 - pixiv」など
+  // "タイトル - 作者の小説 - pixiv" fallback
   m = s.match(/^(.+?)\s*-\s*.+$/u);
   if (m) {
     const title = m[1].replace(/\u3000/g, " ").replace(/\s+/g, " ").trim();
     return { isContent: true, cert: "title", site, workTitle: title, episodeTitle: title, author: "", pixivId };
   }
 
-  // 5) フォールバック（本文だが構造不明）
   const title = s.replace(/\u3000/g, " ").replace(/\s+/g, " ").trim();
   if (title) {
     return { isContent: true, cert: "title", site, workTitle: title, episodeTitle: title, author: "", pixivId };
@@ -468,23 +508,20 @@ function parsePixiv(u, rawTitle) {
   return { isContent: true, cert: "url", site, workTitle: "", episodeTitle: "", author: "", pixivId };
 }
 
-
-/* Hameln */
+/* ===== Hameln ===== */
 function parseHameln(u, title) {
   const site = SITE.HAMELN;
   const path = u.pathname;
 
-  const isSerial = /^\/novel\/\d+\/\d+\.html$/i.test(path);   // 連載各話
-  const isTopOrShort = /^\/novel\/\d+\/?$/i.test(path);       // 作品トップ or 短編
+  const isSerial = /^\/novel\/\d+\/\d+\.html$/i.test(path);
+  const isTopOrShort = /^\/novel\/\d+\/?$/i.test(path);
 
-  // 成人確認ページや汎用タイトルページは除外
   const isGenericTitle = /^ハーメルン\s*-\s*SS･小説投稿サイト-?$/i
     .test(String(title || "").trim());
   if (isGenericTitle) {
     return { isContent: false, cert: "none", site, workTitle: "", episodeTitle: "", author: "" };
   }
 
-  // タイトル末尾の「- ハーメルン」を除去して分割
   const trimmed = String(title || "").replace(/\s*-\s*ハーメルン$/i, "").trim();
   const parts = trimmed.split(/\s+-\s+/).map(s => cleanWhitespace(s));
 
@@ -508,9 +545,7 @@ function parseHameln(u, title) {
   return { isContent: false, cert: "none", site, workTitle: "", episodeTitle: "", author: "" };
 }
 
-
-
-/* Kakuyomu */
+/* ===== Kakuyomu ===== */
 function parseKakuyomu(u, title) {
   const site = SITE.KAKUYOMU; const path = u.pathname;
   const isEpisode = /^\/works\/\d+\/episodes\/\d+\/?$/i.test(path);
@@ -537,7 +572,7 @@ function parseKakuyomu(u, title) {
   return { isContent: false, cert: "none", site, workTitle: "", episodeTitle: "", author: "" };
 }
 
-/* Narou */
+/* ===== Narou ===== */
 const narouApi = (() => {
   const cache = new Map(); const queue = [];
   let processing = false; let bucket = { ts: 0, count: 0 };
@@ -626,6 +661,7 @@ function pauseReading(tabId, now, reason = "PAUSE") {
         stop: reason === "IDLE_HOLD"
           ? (st.lastInteraction || now) + SETTINGS.idleHoldMs
           : now,
+        queuedAt: now,
         site: st.meta.site,
         workTitle: st.meta.workTitle,
         episodeTitle: st.meta.episodeTitle,
@@ -797,27 +833,33 @@ async function stopReading(tabId, now, reason = "STOP") {
   }
 
   const delta = uncommittedMs(st, now);
+  let pendingToKeep = null;
+
   if (st.meta?.isContent && st.meta?.cert === "title" && delta > 0) {
     const forceCommit = (reason === "TAB_REMOVED" && SETTINGS.commitOnCloseBelowMin === true);
     if (delta >= SETTINGS.minSessionMs || forceCommit) {
       await commitDelta(st, delta, now, reason);
       st.committedMs += delta;
     } else {
-      st.pending = {
+      const p = {
         kind: "short", ms: delta, stop: now, expiresAt: now + SETTINGS.pendingShortTimeoutMs,
+        queuedAt: now,
         site: st.meta.site, workTitle: st.meta.workTitle, episodeTitle: st.meta.episodeTitle, author: st.meta.author,
         sessionId: st.sessionId, ncode: st.meta.ncode, pixivId: st.meta.pixivId,
         url: st.contentUrlAtStart || st.urlConfirmed || st.urlObserved || ""
       };
+      st.pending = p;
+      pendingToKeep = p;
       schedulePendingDrop(tabId);
       log("pending.store",{ tabId: st.tabId, sessionId: st.sessionId, ms: delta, reason: "SHORT_COMMIT", stopReason: reason });
     }
   }
 
-  // セッション完全終了
-  st.accumMs = 0; st.committedMs = 0; st.pending = null; st.sessionId = null; st.sessionStartTs = undefined;
+  // セッション完全終了（pendingは必要に応じて保持）
+  st.accumMs = 0; st.committedMs = 0; st.sessionId = null; st.sessionStartTs = undefined;
   st.contentUrlAtStart = ""; st.lastStableTitle = "";
   st._promoteTitleDebounce = new Map();
+  st.pending = pendingToKeep;
   tabState.set(tabId, st);
 
   log("reading.stop",{ tabId, elapsedMs: delta, reason, site: st.meta?.site });
@@ -894,7 +936,8 @@ async function onUrlOrTitleChange(tabId, newUrl, newTitle) {
         st._promoteTitleDebounce = new Map();
         st.accumMs = 0; st.committedMs = 0; st.sessionId = null; st.sessionStartTs = undefined;
         st.contentUrlAtStart = "";
-        st.pending = null; st.awaitCert = null;
+        // pending は保持（吸収時にコンテンツ一致チェックで弾く／期限切れで落とす）
+        st.awaitCert = null;
       }
       st.urlObserved = newUrl;
     }
