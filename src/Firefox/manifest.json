@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "ブックタイマー",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "対応小説サイトでの読書時間を自動計測し、日別・累計・作品別に集計。",
   "permissions": [
     "storage",
