@@ -509,41 +509,114 @@ function parsePixiv(u, rawTitle) {
 }
 
 /* ===== Hameln ===== */
-function parseHameln(u, title) {
+function parseHameln(u, title, options = {}) {
+  const { copyEpFromWorkIfMissing = true } = options;
   const site = SITE.HAMELN;
-  const path = u.pathname;
+  const path = (u && u.pathname) ? String(u.pathname) : "";
 
   const isSerial = /^\/novel\/\d+\/\d+\.html$/i.test(path);
   const isTopOrShort = /^\/novel\/\d+\/?$/i.test(path);
 
-  const isGenericTitle = /^ハーメルン\s*-\s*SS･小説投稿サイト-?$/i
-    .test(String(title || "").trim());
-  if (isGenericTitle) {
-    return { isContent: false, cert: "none", site, workTitle: "", episodeTitle: "", author: "" };
+  const raw = String(title || "");
+  const debug = [];
+  debug.push(`raw: "${raw}"`);
+
+  // トップの汎用タイトルは非コンテンツ（ダッシュはユニコードも許容）
+  const DASH = "[-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\uFF0D]";
+  const genericRe = new RegExp(`^ハーメルン\\s*${DASH}\\s*SS･小説投稿サイト-?$`, "i");
+  if (genericRe.test(raw.trim())) {
+    debug.push("Generic Hameln title detected -> treat as non-content");
+    return {
+      isContent: false,
+      cert: "none",
+      site,
+      workTitle: "",
+      episodeTitle: "",
+      author: "",
+      _debug: debug
+    };
   }
 
-  const trimmed = String(title || "").replace(/\s*-\s*ハーメルン$/i, "").trim();
-  const parts = trimmed.split(/\s+-\s+/).map(s => cleanWhitespace(s));
+  // 末尾が「(ダッシュ列)が2つ以上 + ハーメルン」か？（短編本文の手掛かり）
+  const hadTrailingEmptySubtitle = new RegExp(`(?:\\s*${DASH}\\s*){2,}ハーメルン\\s*$`, "i").test(raw);
+  debug.push(`hadTrailingEmptySubtitle: ${hadTrailingEmptySubtitle}`);
 
+  // 1) 末尾の「(1回以上のダッシュ列)+ハーメルン」を削除
+  const siteSuffixRe = new RegExp(`(?:\\s*${DASH}\\s*)+ハーメルン\\s*$`, "i");
+  let noSite = raw.replace(siteSuffixRe, "").trim();
+  debug.push(`after remove " - ハーメルン": "${noSite}"`);
+
+  // 2) 末尾の「ダッシュ列」だけが残っていたら削除
+  const trailingDashesRe = new RegExp(`(?:\\s*${DASH}\\s*)+$`, "g");
+  noSite = noSite.replace(trailingDashesRe, "").trim();
+  debug.push(`after strip trailing hyphen sequences: "${noSite}"`);
+
+  // 3) 半角「 - 」でのみ分割（全角ダッシュは区切りにしない）
+  const partsRaw = noSite ? noSite.split(/\s+-\s+/) : [];
+  const parts = partsRaw.map(p => (p || "").trim());
+  debug.push(`initial split parts: ${JSON.stringify(parts)}`);
+
+  // 4) 空要素やダッシュのみの要素を除去（ダッシュはユニコード含む）
+  const hyphenOnlyRe = new RegExp(`^${DASH}+$`);
+  const filtered = parts.filter(p => p !== "" && !hyphenOnlyRe.test(p));
+  debug.push(`filtered parts (remove empty or only -): ${JSON.stringify(filtered)}`);
+
+  // 5) work/ep の決定
+  let work = "";
+  let ep = "";
+  if (filtered.length === 0) {
+    debug.push("no meaningful parts -> work/ep empty");
+  } else if (filtered.length === 1) {
+    work = filtered[0];
+    debug.push(`single part -> work="${work}", ep empty for now`);
+  } else {
+    ep = filtered[filtered.length - 1];
+    work = filtered.slice(0, filtered.length - 1).join(" - ");
+    debug.push(`multi-part -> work="${work}", ep="${ep}"`);
+  }
+
+  // 6) 短編（- - ハーメルン）系の特例
+  if (!ep && hadTrailingEmptySubtitle && copyEpFromWorkIfMissing && (isSerial || isTopOrShort) && work) {
+    ep = work;
+    debug.push("applied copyEpFromWorkIfMissing because trailing empty-subtitle was detected (serial/top page)");
+  }
+
+  // 7) 仕上げ
+  work = work.trim();
+  ep = ep.trim();
+
+  // 8) isContent / cert 判定
+  let isContentOut;
+  let cert;
   if (isSerial) {
-    const work = cleanWhitespace(parts[0] || "");
-    const ep = cleanWhitespace(parts[1] || "");
-    const ok = !!(work && ep);
-    return { isContent: ok, cert: ok ? "title" : "url", site, workTitle: work, episodeTitle: ep, author: "" };
-  }
-
-  if (isTopOrShort) {
-    const work = cleanWhitespace(parts[0] || "");
-    const ep = cleanWhitespace(parts[1] || "");
-    if (parts.length >= 2) {
-      return { isContent: true, cert: "title", site, workTitle: work, episodeTitle: ep, author: "" };
+    isContentOut = !!work;
+    cert = isContentOut ? "title" : "url";
+  } else if (isTopOrShort) {
+    if (!ep) {
+      isContentOut = false;
+      cert = work ? "title" : "none";
     } else {
-      return { isContent: false, cert: work ? "title" : "none", site, workTitle: work, episodeTitle: "", author: "" };
+      isContentOut = true;
+      cert = "title";
     }
+  } else {
+    isContentOut = false;
+    cert = "none";
   }
 
-  return { isContent: false, cert: "none", site, workTitle: "", episodeTitle: "", author: "" };
+  debug.push(`final -> work="${work}", ep="${ep}", isContent=${isContentOut}, cert=${cert}`);
+
+  return {
+    isContent: isContentOut,
+    cert,
+    site,
+    workTitle: work,
+    episodeTitle: ep,
+    author: "",
+    _debug: debug
+  };
 }
+
 
 /* ===== Kakuyomu ===== */
 function parseKakuyomu(u, title) {
